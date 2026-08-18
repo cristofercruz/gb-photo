@@ -369,7 +369,7 @@ const uint8_t * const repair_messages[] = {
 };
 
 uint8_t INIT_module_sysmessages(void) BANKED {
-    if ((!camera_settings_reset) && (protected_status == PROTECTED_CORRECT)) return 0;
+    if ((!camera_settings_reset) && ((protected_status & PROTECTED_REPAIRED_MASK) == 0)) return 0;
 
     sync_vblank();
     vwf_set_colors(DMG_WHITE, DMG_BLACK);
@@ -378,7 +378,7 @@ uint8_t INIT_module_sysmessages(void) BANKED {
     uint8_t y = 0;
 
     menu_text_out(0, y++, 0, WHITE_ON_BLACK, ITEM_DEFAULT, "Save file errors were detected.");
-    if (protected_status != PROTECTED_CORRECT) {
+    if (protected_status & PROTECTED_REPAIRED_MASK) {
         y++;
         menu_text_out(0, y++, 0, WHITE_ON_BLACK, ITEM_DEFAULT, "Fixing checksums to prevent wiping");
         menu_text_out(0, y++, 0, WHITE_ON_BLACK, ITEM_DEFAULT, "data by the original camera ROM.");
