@@ -231,9 +231,36 @@ static void AT(IMAGE1_OWNER_ADDRESS + PROTECTED_BLOCK_SIZE(IMAGE1_OWNER_LENGTH))
 static void AT(0xaff2) calibration;
 #define CALIBRATION_ECHO_BANK 8
 static void AT(0xbff2) calibration_echo;
+/** Last-resort sensor calibration.
+
+    Twelve threshold references plus the two check bytes, matching the block stored at
+    $AFF2 and echoed at $BFF2. They are NOT generic: they were measured from one
+    particular sensor, and a different camera's own values differ from them by several
+    counts. Writing them over a camera that has its own calibration replaces measured
+    data with a stranger's, and the only way to get it back is the factory procedure --
+    a save full of $AA, run in complete darkness. So this is a fallback for a block that
+    is genuinely unreadable, never a routine reset.
+*/
 const uint8_t default_calibration[] = {125, 125, 124, 126, 124, 125, 124, 122, 123, 121, 118, 104, 194, 60};
 
+#define CALIBRATION_REFS 12
+#define CALIBRATION_SUM_SEED 0x0D
+#define CALIBRATION_XOR_SEED 0x23
+
+/** The check the stored calibration block carries: a running sum plus $0D and a running
+    xor plus $23, in the two bytes that follow the twelve references. */
+static bool calibration_is_valid(const uint8_t * block) {
+    uint8_t sum = 0, parity = 0;
+    for (uint8_t i = 0; i != CALIBRATION_REFS; i++) {
+        sum += block[i];
+        parity ^= block[i];
+    }
+    return (((uint8_t)(sum + CALIBRATION_SUM_SEED) == block[CALIBRATION_REFS]) &&
+            ((uint8_t)(parity + CALIBRATION_XOR_SEED) == block[CALIBRATION_REFS + 1]));
+}
+
 uint8_t protected_status = PROTECTED_CORRECT;
+static uint8_t rescued_calibration[sizeof(default_calibration)];
 
 static void fill_inc(uint8_t * array, uint8_t size) {
     for (uint8_t i = 0; (i < size); *array++ = i++);
@@ -280,12 +307,29 @@ uint8_t INIT_module_protected(void) BANKED {
             protected_status |= PROTECTED_REPAIR_META;
         }
     }
-    if (protected_status != PROTECTED_CORRECT) {
+    /* Repair the calibration only if it is actually damaged. It used to be rewritten
+       whenever any unrelated block had been repaired, which threw away measured
+       per-sensor data to fix something that was never wrong with it. A surviving copy is
+       always preferred over the built-in fallback. */
+    CAMERA_SWITCH_RAM(CALIBRATION_BANK);
+    bool primary_ok = calibration_is_valid((const uint8_t *)&calibration);
+    CAMERA_SWITCH_RAM(CALIBRATION_ECHO_BANK);
+    bool echo_ok = calibration_is_valid((const uint8_t *)&calibration_echo);
+
+    if (!primary_ok || !echo_ok) {
+        if (primary_ok) {                                   // echo lost, copy the good one
+            CAMERA_SWITCH_RAM(CALIBRATION_BANK);
+            memcpy(rescued_calibration, &calibration, sizeof(rescued_calibration));
+        } else if (echo_ok) {                               // primary lost, restore from echo
+            memcpy(rescued_calibration, &calibration_echo, sizeof(rescued_calibration));
+        } else {                                            // both gone, nothing left to keep
+            memcpy(rescued_calibration, default_calibration, sizeof(rescued_calibration));
+        }
         CAMERA_SWITCH_RAM(CALIBRATION_BANK);
-        memcpy(&calibration, default_calibration, sizeof(default_calibration));
+        memcpy(&calibration, rescued_calibration, sizeof(rescued_calibration));
         CAMERA_SWITCH_RAM(CALIBRATION_ECHO_BANK);
-        memcpy(&calibration_echo, default_calibration, sizeof(default_calibration));
-        protected_status |= PROTECTED_REPAIR_CAL;
+        memcpy(&calibration_echo, rescued_calibration, sizeof(rescued_calibration));
+        protected_status |= (primary_ok || echo_ok) ? PROTECTED_REPAIR_CAL : PROTECTED_RESET_CAL;
     }
     CAMERA_SWITCH_RAM(CAMERA_BANK_LAST_SEEN);
     return 0;
@@ -296,6 +340,7 @@ const uint8_t * const repair_messages[] = {
     "  Undelete images...\tOK!",
     "  Reset owner info...\tOK!",
     "  Reset images meta...\tOK!",
+    "  Restore calibration...\tOK!",
     "  Reset calibration...\tOK!"
 };
 

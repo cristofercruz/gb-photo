@@ -14,7 +14,8 @@
 #define PROTECTED_REPAIR_VECTOR 0x02
 #define PROTECTED_REPAIR_OWNER  0x04
 #define PROTECTED_REPAIR_META   0x08
-#define PROTECTED_REPAIR_CAL    0x10
+#define PROTECTED_REPAIR_CAL    0x10    // one copy survived and was mirrored back
+#define PROTECTED_RESET_CAL     0x20    // both copies unreadable, fell back to defaults
 
 extern uint8_t protected_status;
 
