@@ -102,6 +102,7 @@
 #define ACTION_AUTOEXP_RIGHT        112
 #define ACTION_AUTOEXP_BOTTOM       113
 #define ACTION_AUTOEXP_LEFT         114
+#define ACTION_AUTOEXP_OVERALL      115
 
 // userinfo actions
 #define ACTION_OWNER_INFO_NAME      120

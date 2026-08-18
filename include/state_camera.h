@@ -83,6 +83,9 @@ typedef enum {
     area_right,
     area_bottom,
     area_left,
+    /* Appended rather than placed first so that settings saved by earlier builds keep
+       pointing at the area they were set to. The menu lists it first regardless. */
+    area_overall,
     N_AUTOEXP_AREAS
 } autoexp_area_e;
 
@@ -194,7 +197,10 @@ uint8_t * camera_format_item_text(camera_menu_e id, const uint8_t * format, came
 
 #define COUNTER_INFINITE_VALUE 31
 
-#define DEFAULT_CONTRAST_VALUE 9
+/* The dither generator indexes contrast record (value - 1), and record 7 spreads the
+   highlight thresholds over 48 counts against record 8's 39 -- which is what keeps a lit
+   wall gradating smoothly instead of stepping. */
+#define DEFAULT_CONTRAST_VALUE 8
 #define DEFAULT_EXPOSURE_INDEX 28
 
 #define MAX_AEB_IMAGES 29

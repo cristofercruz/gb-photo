@@ -33,6 +33,7 @@
 #include "state_gallery.h"
 #include "pic-n-rec.h"
 #include "load_save.h"
+#include "calibration.h"
 
 #include "misc_assets.h"
 
@@ -82,12 +83,61 @@ camera_shadow_regs_t SHADOW;        // camera shadow registers for reading
 
 volatile uint8_t camera_PnR_delay;  // PicNRec delay counter
 
-#define AUTOEXP_SENSIVITY0   5
-#define AUTOEXP_SENSIVITY1  10
-#define AUTOEXP_SENSIVITY2  20
-#define AUTOEXP_SENSIVITY3  95
+/** Auto-exposure servo, modelled to mimic the original camera.
 
-#define AUTOEXP_THRESHOLD   20
+    The error is a RATIO of the measured value to the target, not a difference, and the
+    correction is the current exposure shifted right by a count taken from the table
+    below -- so the step is always a fraction of where the exposure already is. That is
+    the right shape for exposure, whose perceptual effect is ratiometric: adding 10 to
+    an exposure of 40 is a large change, adding 10 to 4000 is nothing.
+
+    Note that the measurement counts DARKNESS, not brightness: in packed 2bpp a set bit
+    is a dark pixel, so the servo lengthens exposure when the measurement reads high.
+*/
+#define AUTOEXP_RATIO_SETPOINT  36      // the ratio the servo drives towards
+#define AUTOEXP_RATIO_CLAMP     159     // the subtract loop stops here
+#define AUTOEXP_NO_CORRECTION   16      // a shift of 16 on a 16-bit value makes the step zero
+
+/** Shift counts indexed by the measured ratio.
+
+    The table is non-monotonic and peaks at 16 across indices 35-37. A shift of 16 gives
+    a step of zero, so the peak IS the deadband and it sits exactly on the setpoint.
+    Because the direction comes from comparing the ratio against the setpoint rather
+    than from which table was consulted, one table serves both directions.
+
+    Read the two flanks: at index 0 (far too bright) the shift is 2, a -25% step, while
+    at index 159 (far too dark) it is 3, a +12.5% step. Cutting exposure is allowed to
+    be twice as aggressive as raising it, which is the right asymmetry -- a blown-out
+    frame carries no information at all, a dark one still does.
+*/
+static const uint8_t autoexp_shift_table[AUTOEXP_RATIO_CLAMP + 1] = {
+     2,  3,  3,  3,  4,  3,  4,  4,  4,  4,  4,  4,  4,  4,  4,  4,
+     4,  4,  4,  5,  4,  5,  5,  5,  5,  5,  6,  5,  6,  6,  6,  7,
+     7,  8,  9, 16, 16, 16,  9,  8,  7,  7,  6,  6,  5,  6,  5,  5,
+//           ^^^^^^^^^^^^ deadband, centred on AUTOEXP_RATIO_SETPOINT
+     5,  5,  4,  5,  4,  4,  4,  4,  4,  4,  4,  4,  4,  4,  4,  4,
+     4,  4,  4,  4,  4,  4,  4,  4,  4,  4,  4,  4,  4,  4,  4,  4,
+     3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,
+     3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,
+     3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,
+     3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,
+     3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3
+};
+
+/** measured / target, clamped so the result can always index the table above.
+
+    A target of zero means the setpoint has been dragged to the very bottom of its
+    range, where the servo should simply run exposure up; report the clamp for it
+    rather than spinning.
+*/
+static uint8_t autoexp_ratio(uint16_t measured, uint8_t target) {
+    if (!target) return AUTOEXP_RATIO_CLAMP;
+    /* Repeated subtraction would avoid a divide the SM83 does not have, but it costs
+       up to 159 iterations of 16-bit subtract on the frame's critical path. Clamping a
+       division gives the identical number for every input at a fraction of the cost. */
+    uint16_t ratio = measured / target;
+    return (ratio > AUTOEXP_RATIO_CLAMP) ? AUTOEXP_RATIO_CLAMP : (uint8_t)ratio;
+}
 
 #define AUTOEXP_AREA_X      18
 #define AUTOEXP_AREA_Y      10
@@ -177,114 +227,175 @@ void RENDER_CAM_REGISTERS(void) {
     RENDER_CAM_REG_DITHERPATTERN();
 }
 
-void RENDER_REGS_FROM_EXPOSURE(void) {
-    // Gain 14.0dB or 0 | vRef +64 mV | Horizontal edge mode | Exposure time range from  0.5ms to 0.3ms
-    // Gain 14.0dB or 0 | vRef +160 mV| 2-D edge mode        | Exposure time range from   67ms to 0.8ms
-    // Gain 20.0dB or 4 | vRef +96 mV | 2-D edge mode        | Exposure time range from  282ms to  32ms
-    // Gain 26.0dB or 8 | vRef -192 mV| 2-D edge mode        | Exposure time range from  573ms to 164ms
-    // Gain 32.0dB or 10| vRef -416 mV| No edge Operation    | Exposure time range from 1048ms to 394ms
-    bool apply_dither;
-    uint16_t exposure = SETTING(current_exposure);
-    if (_is_CPU_FAST) {
-        if (exposure < TO_EXPOSURE_VALUE(1536)) {
-            SETTING(edge_exclusive)     = false;    // CAM01F_EDGEEXCL_V_OFF
-            SETTING(edge_operation)     = 1;        // CAM01_EDGEOP_HORIZ
-            SETTING(voltage_out)        = 64;
-            SETTING(current_gain)       = 0;        // CAM01_GAIN_140
-            if (apply_dither = (SETTING(ditheringHighLight)))
-                SETTING(ditheringHighLight) = false;// dither HIGH
-        } else if (exposure < TO_EXPOSURE_VALUE(64000)) {
-            SETTING(edge_exclusive)     = true;     // CAM01F_EDGEEXCL_V_ON
-            SETTING(edge_operation)     = 0;        // CAM01_EDGEOP_2D
-            SETTING(voltage_out)        = 160;
-            SETTING(current_gain)       = 0;        // CAM01_GAIN_140
-            if (apply_dither = (SETTING(ditheringHighLight)))
-                SETTING(ditheringHighLight) = true;// dither LOW
-        } else if (exposure < TO_EXPOSURE_VALUE(564000)) {
-            SETTING(edge_exclusive)     = true;     // CAM01F_EDGEEXCL_V_ON
-            SETTING(edge_operation)     = 0;        // CAM01_EDGEOP_2D
-            SETTING(voltage_out)        = 96;
-            SETTING(current_gain)       = 4;        // CAM01_GAIN_200
-            if (apply_dither = (!SETTING(ditheringHighLight)))
-                SETTING(ditheringHighLight) = true; // dither LOW
-        } else {
-            SETTING(edge_exclusive)     = true;     // CAM01F_EDGEEXCL_V_ON
-            SETTING(edge_operation)     = 0;        // CAM01_EDGEOP_2D
-            SETTING(voltage_out)        = -192;
-            SETTING(current_gain)       = 8;        // CAM01_GAIN_260
-            if (apply_dither = (!SETTING(ditheringHighLight)))
-                SETTING(ditheringHighLight) = true; // dither LOW
-        }
-    } else {
-        if (exposure < TO_EXPOSURE_VALUE(768)) {
-            SETTING(edge_exclusive)     = false;    // CAM01F_EDGEEXCL_V_OFF
-            SETTING(edge_operation)     = 1;        // CAM01_EDGEOP_HORIZ
-            SETTING(voltage_out)        = 64;
-            SETTING(current_gain)       = 0;        // CAM01_GAIN_140
-            if (apply_dither = (SETTING(ditheringHighLight)))
-                SETTING(ditheringHighLight) = false;// dither HIGH
-        } else if (exposure < TO_EXPOSURE_VALUE(32000)) {
-            SETTING(edge_exclusive)     = true;     // CAM01F_EDGEEXCL_V_ON
-            SETTING(edge_operation)     = 0;        // CAM01_EDGEOP_2D
-            SETTING(voltage_out)        = 160;
-            SETTING(current_gain)       = 0;        // CAM01_GAIN_140
-            if (apply_dither = (SETTING(ditheringHighLight)))
-                SETTING(ditheringHighLight) = true;// dither LOW
-        } else if (exposure < TO_EXPOSURE_VALUE(282000)) {
-            SETTING(edge_exclusive)     = true;     // CAM01F_EDGEEXCL_V_ON
-            SETTING(edge_operation)     = 0;        // CAM01_EDGEOP_2D
-            SETTING(voltage_out)        = 96;
-            SETTING(current_gain)       = 4;        // CAM01_GAIN_200
-            if (apply_dither = (!SETTING(ditheringHighLight)))
-                SETTING(ditheringHighLight) = true; // dither LOW
-        } else if (exposure < TO_EXPOSURE_VALUE(573000)) {
-            SETTING(edge_exclusive)     = true;     // CAM01F_EDGEEXCL_V_ON
-            SETTING(edge_operation)     = 0;        // CAM01_EDGEOP_2D
-            SETTING(voltage_out)        = -192;
-            SETTING(current_gain)       = 8;        // CAM01_GAIN_260
-            if (apply_dither = (!SETTING(ditheringHighLight)))
-                SETTING(ditheringHighLight) = true; // dither LOW
-        } else {
-            SETTING(edge_exclusive)     = false;    // CAM01F_EDGEEXCL_V_OFF
-            SETTING(edge_operation)     = 3;        // CAM01_EDGEOP_NONE
-            SETTING(voltage_out)        = -416;
-            SETTING(current_gain)       = 10;       // CAM01_GAIN_32
-            if (apply_dither = (!SETTING(ditheringHighLight)))
-                SETTING(ditheringHighLight) = true; // dither LOW
-        }
+/** Auto-exposure register bands -- the gain ladder.
+
+    Exposure alone cannot cover the range of real scenes -- Pan Docs quotes about
+    2000:1 between direct sunlight and a room lit only by a television -- and pushing
+    exposure to the dark end wrecks the viewfinder frame rate, because frame time grows
+    with it. So the analog gain, output reference voltage and edge operation move in
+    steps as exposure travels, and each band pins them for one stretch of exposure.
+
+    The five bands correspond one for one to the operating points listed below,
+    including the detail that the lowest two share a gain and differ only in N.
+
+    Two things about the shape. The stay ranges deliberately OVERLAP: a band is left
+    upward at `stay_hi` but only left downward under `stay_lo`, roughly an octave lower.
+    That overlap is hysteresis, and it is what stops the picture flapping between two
+    gain settings on a scene sitting near a threshold -- every upward step doubles the
+    gain, so without it the servo would immediately drive exposure back across the
+    boundary it had just crossed.
+
+    And the exposure is re-seeded to a fixed landing point on arrival rather than simply
+    halved, so brightness is roughly preserved and the user never sees the picture jump.
+    The landings are tuned rather than computed: `voltage_out` moves at every boundary
+    too, so the brightness ratio across a handover is not purely the gain ratio. They
+    come out near 1.4x rather than 2x, and they are what keeps every transition clear of
+    the threshold it just crossed -- an exact halving at band 3 -> 4 would land within
+    0.3% of band 4's exit and lose the hysteresis entirely.
+*/
+typedef struct autoexp_band_t {
+    uint16_t stay_lo;           // drop to the band below when exposure falls under this
+    uint16_t stay_hi;           // climb to the band above at or over this exposure
+    uint16_t land_from_below;   // exposure to adopt when this band is entered climbing
+    uint16_t land_from_above;   // exposure to adopt when this band is entered dropping
+    int16_t  voltage_out;
+    uint8_t  gain;              // index into gains[]
+    uint8_t  edge_operation;    // index into edge_operations[]
+    uint8_t  edge_exclusive;
+} autoexp_band_t;
+
+// Gain 14.0dB or 0 | vRef +64 mV | Horizontal edge mode | Exposure time range from  0.5ms to 0.3ms
+// Gain 14.0dB or 0 | vRef +160 mV| 2-D edge mode        | Exposure time range from   67ms to 0.8ms
+// Gain 20.0dB or 4 | vRef +96 mV | 2-D edge mode        | Exposure time range from  282ms to  32ms
+// Gain 26.0dB or 8 | vRef -192 mV| 2-D edge mode        | Exposure time range from  573ms to 164ms
+// Gain 32.0dB or 10| vRef -416 mV| No edge Operation    | Exposure time range from 1048ms to 394ms
+//
+// The low end of each range above is the corresponding stay_lo below, to the register
+// value. Band 2's from_above landing is the one value not measured directly; it is
+// interpolated from the 1.375x and 1.458x that the other two downward gain-halving
+// handovers use.
+static const autoexp_band_t autoexp_bands_slow[] = {
+//    stay_lo  stay_hi  from_below  from_above    vout  gain  edge  excl
+    { 0x0010,  0x0030,     0x0000,     0x001F,      64,    0,    1, false },
+    { 0x0031,  0x1200,     0x0048,     0x0B00,     160,    0,    0, true  },
+    { 0x0800,  0x6000,     0x0D80,     0x3800,      96,    4,    0, true  },
+    { 0x2800,  0xC000,     0x3500,     0x8C00,    -192,    8,    0, true  },
+    { 0x6000,  0xFFFF,     0x8500,     0x0000,    -416,   10,    3, false }
+};
+// At double speed the exposure register's time base halves, so every threshold and
+// landing doubles. The top rung would then need a stay_hi past the end of a 16-bit
+// register, so the gain 32.0dB band is unreachable and the ladder is four rungs.
+static const autoexp_band_t autoexp_bands_fast[] = {
+//    stay_lo  stay_hi  from_below  from_above    vout  gain  edge  excl
+    { 0x0020,  0x0060,     0x0000,     0x003E,      64,    0,    1, false },
+    { 0x0062,  0x2400,     0x0090,     0x1600,     160,    0,    0, true  },
+    { 0x1000,  0xC000,     0x1B00,     0x7000,      96,    4,    0, true  },
+    { 0x5000,  0xFFFF,     0x6A00,     0x0000,    -192,    8,    0, true  }
+};
+
+#define AUTOEXP_BAND_UNSET      0xFF
+#define AUTOEXP_BAND_GAIN_HI    2       // the one band running at gain_hi; see autoexp_apply_band()
+#define AUTOEXP_BANDS()         ((_is_CPU_FAST) ? autoexp_bands_fast : autoexp_bands_slow)
+#define AUTOEXP_BANDS_LAST()    ((uint8_t)((_is_CPU_FAST) ? (LENGTH(autoexp_bands_fast) - 1) : (LENGTH(autoexp_bands_slow) - 1)))
+#define AUTOEXP_EXPOSURE_MIN()  ((uint16_t)((_is_CPU_FAST) ? (EXPOSURE_LOW_LIMIT << 1) : EXPOSURE_LOW_LIMIT))
+
+static uint8_t autoexp_band = AUTOEXP_BAND_UNSET;
+
+void reset_autoexp_band(void) {
+    autoexp_band = AUTOEXP_BAND_UNSET;
+}
+
+/** Pick the register band for `exposure`, one rung at a time and with hysteresis.
+
+    Returns the exposure the new band wants to start from, or 0 when the band did not
+    change. With no band selected yet the exposure is placed by the stay_hi thresholds
+    alone and 0 is returned, since a cold selection is describing where the exposure
+    already is rather than handing over from anywhere.
+*/
+static uint16_t autoexp_select_band(uint16_t exposure) {
+    const autoexp_band_t * bands = AUTOEXP_BANDS();
+    uint8_t last = AUTOEXP_BANDS_LAST();
+    uint8_t band = autoexp_band;
+
+    if (band > last) {
+        for (band = 0; (band < last) && (exposure >= bands[band].stay_hi); band++);
+        autoexp_band = band;
+        return 0;
     }
+    if ((band < last) && (exposure >= bands[band].stay_hi)) {
+        autoexp_band = band + 1;
+        return bands[band + 1].land_from_below;
+    }
+    if ((band != 0) && (exposure < bands[band].stay_lo)) {
+        autoexp_band = band - 1;
+        return bands[band - 1].land_from_above;
+    }
+    return 0;
+}
+
+// program every register the current band owns
+static void autoexp_apply_band(void) {
+    const autoexp_band_t * band = &AUTOEXP_BANDS()[autoexp_band];
+    /* Which contrast curve each band gets is decided by the gain it runs at, not by the
+       band index: every band takes dither_high_light_values except the one running at
+       gain_hi, which takes dither_low_light_values. Bands 0 and 1 both run at gain_lo,
+       which is why they share a curve. */
+    switch_e highlight = (autoexp_band == AUTOEXP_BAND_GAIN_HI) ? set_off : set_on;
+    bool apply_dither = (SETTING(ditheringHighLight) != highlight);
+
+    SETTING(edge_exclusive)     = (band->edge_exclusive) ? set_on : set_off;
+    SETTING(edge_operation)     = band->edge_operation;
+    SETTING(voltage_out)        = band->voltage_out;
+    SETTING(current_gain)       = band->gain;
+    SETTING(ditheringHighLight) = highlight;
+
+    /* Prefer values measured from this sensor over the table's. The table holds figures
+       observed from one real camera, which is the best a constant can do -- but the right
+       output bias and reference voltage depend on the individual part, so a measurement
+       beats any constant. The two lowest bands share the measured low gain and the third
+       takes the measured high one; the top two stay fixed at 26.0 and 32.0 dB. */
+    if (camera_is_calibrated()) {
+        if (autoexp_band <= 1)       SETTING(current_gain) = CALIBRATION_GAIN_LO();
+        else if (autoexp_band == 2)  SETTING(current_gain) = CALIBRATION_GAIN_HI();
+        SETTING(voltage_out)      = calibration_voltage_out_mv(camera_calibration.voltage_out[autoexp_band]);
+        SETTING(current_voltage_ref) = camera_calibration.voltage_ref[autoexp_band];
+    }
+
     CAMERA_SWITCH_RAM(CAMERA_BANK_REGISTERS);
     RENDER_CAM_REG_EDEXOPGAIN();
     RENDER_CAM_REG_EXPTIME();
+    RENDER_CAM_REG_EDRAINVVREF();
     RENDER_CAM_REG_ZEROVOUT();
     if (apply_dither) RENDER_CAM_REG_DITHERPATTERN();
 }
 
-void RENDER_EDGE_FROM_EXPOSURE(void) {
-    uint16_t exposure = SETTING(current_exposure);
-    if (_is_CPU_FAST) {
-        if (exposure < TO_EXPOSURE_VALUE(1536)) {
-            SETTING(edge_exclusive)     = false;    // CAM01F_EDGEEXCL_V_OFF
-            SETTING(edge_operation)     = 1;        // CAM01_EDGEOP_HORIZ
-        } else {
-            SETTING(edge_exclusive)     = true;     // CAM01F_EDGEEXCL_V_ON
-            SETTING(edge_operation)     = 0;        // CAM01_EDGEOP_2D
-        }
-    } else {
-        if (exposure < TO_EXPOSURE_VALUE(768)) {
-            SETTING(edge_exclusive)     = false;    // CAM01F_EDGEEXCL_V_OFF
-            SETTING(edge_operation)     = 1;        // CAM01_EDGEOP_HORIZ
-        } else if (exposure < TO_EXPOSURE_VALUE(573000)) {
-            SETTING(edge_exclusive)     = true;     // CAM01F_EDGEEXCL_V_ON
-            SETTING(edge_operation)     = 0;        // CAM01_EDGEOP_2D
-        } else {
-            SETTING(edge_exclusive)     = false;    // CAM01F_EDGEEXCL_V_OFF
-            SETTING(edge_operation)     = 3;        // CAM01_EDGEOP_NONE
-        }
+/** Snap the registers to whatever band the exposure falls in, ignoring hysteresis.
+
+    This is the path taken when the user sets exposure by hand, where the exposure is
+    an instruction rather than a measurement: it may jump several bands at once, and
+    re-seeding it to preserve brightness would silently overwrite what was just asked
+    for. So the band history is discarded and the exposure is left exactly as set.
+*/
+void RENDER_REGS_FROM_EXPOSURE(void) {
+    autoexp_band = AUTOEXP_BAND_UNSET;
+    autoexp_select_band(SETTING(current_exposure));
+    autoexp_apply_band();
+}
+
+/** The servo path: step at most one band, and hand over on the band's landing point. */
+void RENDER_REGS_FROM_EXPOSURE_SERVO(void) {
+    uint8_t previous = autoexp_band;
+    uint16_t landing = autoexp_select_band(SETTING(current_exposure));
+
+    if (autoexp_band == previous) {
+        // still inside the same band, so only the exposure register needs rewriting
+        CAMERA_SWITCH_RAM(CAMERA_BANK_REGISTERS);
+        RENDER_CAM_REG_EXPTIME();
+        return;
     }
-    CAMERA_SWITCH_RAM(CAMERA_BANK_REGISTERS);
-    RENDER_CAM_REG_EDEXOPGAIN();
-    RENDER_CAM_REG_EXPTIME();
+    // re-seed so brightness carries across the gain change rather than jumping
+    if (landing) SETTING(current_exposure) = CONSTRAINT(landing, AUTOEXP_EXPOSURE_MIN(), EXPOSURE_HIGH_LIMIT);
+    autoexp_apply_band();
 }
 
 bool image_captured(void) {
@@ -387,7 +498,12 @@ static void refresh_usage_indicator(void) {
 
 static void refresh_autoexp_area(void) {
     static const uint8_t * const area_indicators[N_AUTOEXP_AREAS] = {
-        "", " " ICON_AUTOEXP_TOP, " " ICON_AUTOEXP_RIGHT, " " ICON_AUTOEXP_BOTTOM, " " ICON_AUTOEXP_LEFT
+        [area_center]  = "",             // no centre tile in the icon set yet
+        [area_top]     = " " ICON_AUTOEXP_TOP,
+        [area_right]   = " " ICON_AUTOEXP_RIGHT,
+        [area_bottom]  = " " ICON_AUTOEXP_BOTTOM,
+        [area_left]    = " " ICON_AUTOEXP_LEFT,
+        [area_overall] = ""             // the default carries no marker
     };
     if (OPTION(camera_mode) != camera_mode_auto) return;
     menu_text_out(AUTOEXP_AREA_X, AUTOEXP_AREA_Y, 0, WHITE_ON_BLACK, ITEM_DEFAULT, area_indicators[OPTION(autoexp_area)]);
@@ -478,6 +594,14 @@ uint8_t ENTER_state_camera(void) BANKED {
     COUNTER_RESET(camera_shutter_timer);
     COUNTER_RESET(camera_AEB_counter);
     COUNTER_RESET(camera_repeat_counter);
+    // the band ladder's hysteresis is only meaningful against a band this session
+    // actually selected, so start it from the exposure that is about to be loaded
+    reset_autoexp_band();
+    // measure this sensor once and keep the result, rather than repeating it every boot
+    if (!camera_is_calibrated()) {
+        camera_calibrate();
+        if (camera_is_calibrated()) save_camera_calibration();
+    }
     // load some initial settings
     RENDER_CAM_REGISTERS();
     SHADOW.CAM_REG_CAPTURE = 0;
@@ -1032,35 +1156,38 @@ uint8_t onIdleCameraMenu(const struct menu_t * menu, const struct menu_item_t * 
         }
 #ifdef ENABLE_AUTOEXP
         else if ((one_iteration_autoexp) || (OPTION(camera_mode) == camera_mode_auto)) {
-            int16_t error = (calculate_histogram(OPTION(autoexp_area)) - SETTING(current_brightness)) / HISTOGRAM_POINTS_COUNT;
+            uint16_t measured = calculate_histogram(OPTION(autoexp_area));
             CAMERA_SWITCH_RAM(CAMERA_BANK_REGISTERS);  // restore register bank after histogram calculating
 
-            int32_t new_exposure, current_exposure = SETTING(current_exposure);
+            // The servo drives measured/target towards AUTOEXP_RATIO_SETPOINT, so the
+            // user's setpoint enters as the divisor -- which is exactly the byte the
+            // servo divides by. Raising it lowers the ratio and shortens exposure, the
+            // same direction the old difference metric ran in.
+            uint8_t target = SETTING(current_brightness) / AUTOEXP_RATIO_SETPOINT;
+            uint8_t ratio = autoexp_ratio(measured, target);
+            uint8_t shift = autoexp_shift_table[ratio];
 
-            bool error_negative = (error < 0) ? true : false;
-            uint16_t abs_error = abs(error);
+            uint16_t current_exposure = SETTING(current_exposure);
+            uint16_t result_exposure = current_exposure;
 
-            // real camera uses a very similar autoexposure mechanism with steps of
-            // 1-1/4, 1-1/8, 1-1/16, 1-1/32, 1-1/64 on exposure time for over-exposed images
-            // 1+1/8, 1+1/16, 1+1/32, 1+1/64 on exposure time for under-exposed images
-            // jumps in Vref are also taken into account in real camera so that apparent exposure does not jump
-            // algorithm here is globally faster and simplier than a real camera
+            if (shift < AUTOEXP_NO_CORRECTION) {
+                uint16_t step = current_exposure >> shift;
+                // At small exposures the shift can take the step to zero. The bottom band
+                // has no rung below it to escape to, so a floor of 1 keeps the servo from
+                // stalling with a standing error. Everywhere the shift produces a step at
+                // all this is a no-op.
+                if (!step) step = 1;
+                if (ratio >= AUTOEXP_RATIO_SETPOINT) {
+                    // reads too dark -> lengthen exposure, saturating rather than wrapping
+                    uint16_t lengthened = current_exposure + step;
+                    result_exposure = (lengthened < current_exposure) ? EXPOSURE_HIGH_LIMIT : lengthened;
+                } else {
+                    // reads too bright -> shorten exposure
+                    result_exposure = (step < current_exposure) ? (current_exposure - step) : 0;
+                }
+                result_exposure = CONSTRAINT(result_exposure, AUTOEXP_EXPOSURE_MIN(), EXPOSURE_HIGH_LIMIT);
+            }
 
-            if (abs_error > AUTOEXP_SENSIVITY3) {
-                // raw tuning +- 1EV
-                new_exposure = (error_negative) ? (current_exposure >> 1) : (current_exposure << 1);
-            } else if (abs_error > AUTOEXP_SENSIVITY2) {
-                // intermediate tuning +- 1/8 EV
-                new_exposure = current_exposure + ((error_negative) ? (0 - MAX((current_exposure >> 3), 1)) : MAX((current_exposure >> 3), 1));
-            } else if (abs_error > AUTOEXP_SENSIVITY1) {
-                // fine tuning +- 1/16 EV
-                new_exposure = current_exposure + ((error_negative) ? (0 - MAX((current_exposure >> 4), 1)) : MAX((current_exposure >> 4), 1));
-            } else if (abs_error > AUTOEXP_SENSIVITY0) {
-                // very fine tuning +- 1 in C register
-                new_exposure = current_exposure + ((error_negative) ? -1 : 1);
-            } else new_exposure = current_exposure;
-
-            uint16_t result_exposure = CONSTRAINT(new_exposure, (_is_CPU_FAST) ? (EXPOSURE_LOW_LIMIT << 1) : EXPOSURE_LOW_LIMIT, EXPOSURE_HIGH_LIMIT);
             if (result_exposure != SETTING(current_exposure)) {
                 SETTING(current_exposure) = result_exposure;
                 render_registers = true;
@@ -1076,6 +1203,9 @@ uint8_t onIdleCameraMenu(const struct menu_t * menu, const struct menu_item_t * 
                     if (exposures[i] > SETTING(current_exposure)) {
                         SETTING(current_exposure_idx) = i;
                         SETTING(current_exposure) = exposures[SETTING(current_exposure_idx)];
+                        // snapping to the nearest table entry can cross several bands at
+                        // once, so let the ladder reselect from scratch instead of walking
+                        reset_autoexp_band();
                         render_registers = true;
                         break;
                     }
@@ -1086,20 +1216,15 @@ uint8_t onIdleCameraMenu(const struct menu_t * menu, const struct menu_item_t * 
             }
             #endif
 
-            if (render_registers) {
-                switch (OPTION(camera_mode)) {
-                    case camera_mode_assisted:
-                        RENDER_REGS_FROM_EXPOSURE();
-                        break;
-                    default:
-                        if (abs_error > AUTOEXP_THRESHOLD) RENDER_REGS_FROM_EXPOSURE(); else RENDER_EDGE_FROM_EXPOSURE();
-                        break;
-                }
-            }
+            // The band ladder decides for itself whether anything besides the exposure
+            // register needs rewriting, so both camera modes take the same path now:
+            // the old "large error, so also reprogram gain" heuristic was standing in
+            // for the hysteresis the ladder now has.
+            if (render_registers) RENDER_REGS_FROM_EXPOSURE_SERVO();
 
     #if (DEBUG_AUTOEXP==1)
-            sprintf(text_buffer, "%d", (uint16_t)error);
-            menu_text_out(14, 1, 6, WHITE_ON_BLACK, text_buffer);
+            sprintf(text_buffer, "%hu", (uint8_t)ratio);
+            menu_text_out(14, 1, 6, WHITE_ON_BLACK, ITEM_DEFAULT, text_buffer);
     #endif
         }
 #endif
@@ -1265,6 +1390,9 @@ uint8_t UPDATE_state_camera(void) BANKED {
                     case ACTION_MODE_AUTO:
                         static const camera_mode_e cmodes[] = {camera_mode_manual, camera_mode_assisted, camera_mode_auto};
                         OPTION(camera_mode) = cmodes[menu_result - ACTION_MODE_MANUAL];
+                        // each mode carries its own exposure, so the band history from
+                        // the mode being left does not apply to the one being entered
+                        reset_autoexp_band();
                         RENDER_CAM_REGISTERS();
                         break;
                     case ACTION_TRIGGER_ABUTTON:
@@ -1304,8 +1432,9 @@ uint8_t UPDATE_state_camera(void) BANKED {
                     case ACTION_AUTOEXP_RIGHT:
                     case ACTION_AUTOEXP_BOTTOM:
                     case ACTION_AUTOEXP_LEFT:
+                    case ACTION_AUTOEXP_OVERALL:
                         static const autoexp_area_e aareas[] = {
-                            area_center, area_top, area_right, area_bottom, area_left
+                            area_center, area_top, area_right, area_bottom, area_left, area_overall
                         };
                         OPTION(autoexp_area) = aareas[menu_result - ACTION_AUTOEXP_CENTER];
                         break;
