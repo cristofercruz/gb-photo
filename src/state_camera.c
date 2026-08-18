@@ -706,7 +706,7 @@ uint8_t ENTER_state_camera(void) BANKED {
     // actually selected, so start it from the exposure that is about to be loaded
     reset_autoexp_band();
     // measure this sensor once and keep the result, rather than repeating it every boot
-    if (!camera_is_calibrated()) {
+    if (!camera_calibration_is_current()) {
         camera_calibrate();
         if (camera_is_calibrated()) save_camera_calibration();
     }

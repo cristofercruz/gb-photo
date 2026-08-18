@@ -22,6 +22,11 @@ typedef struct camera_calibration_t {
     uint8_t gains;                              // gain_lo | (gain_hi << 4); zero == never calibrated
     uint8_t voltage_ref[N_CALIBRATION_BANDS];   // CNTR4 V field, 0..7
     uint8_t voltage_out[N_CALIBRATION_BANDS];   // CNTR5 with bit 7 cleared
+    /* Hash of the twelve threshold references the search ran against. The measurement is
+       only meaningful for those references, so if they change -- the factory procedure
+       having regenerated them, or a previously unreadable set becoming readable -- the
+       stored result is stale and has to be measured again. */
+    uint8_t reference_hash;
 } camera_calibration_t;
 
 extern camera_calibration_t camera_calibration;
@@ -45,5 +50,8 @@ inline int16_t calibration_voltage_out_mv(uint8_t cntr5) {
     about two seconds. Leaves the camera registers mapped.
 */
 void camera_calibrate(void) BANKED;
+
+/** True when the stored calibration was measured against the references now in place. */
+bool camera_calibration_is_current(void) BANKED;
 
 #endif

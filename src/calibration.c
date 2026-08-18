@@ -75,6 +75,15 @@ static bool calib_load_stored(uint8_t bank, uint16_t address) {
     return ((uint8_t)(parity + CALIB_STORED_XOR_SEED) == *stored);
 }
 
+/* A rotate-and-xor over the twelve references. One byte is enough: a collision only
+   means a re-measure is skipped, which is exactly the old behaviour. */
+static uint8_t calib_reference_hash(void) {
+    uint8_t hash = 0;
+    for (uint8_t i = 0; i != CALIB_N_REFERENCES; i++)
+        hash = (uint8_t)(((hash << 1) | (hash >> 7)) ^ calib_reference[i]);
+    return hash;
+}
+
 static void calib_load_references(void) {
     if (calib_load_stored(CALIB_STORED_BANK, CALIB_STORED_ADDR)) return;
     if (calib_load_stored(CALIB_STORED_ECHO_BANK, CALIB_STORED_ECHO_ADDR)) return;
@@ -254,5 +263,14 @@ void camera_calibrate(void) BANKED {
     calib_band(4, CALIB_TRIAL_BAND4,          0x0A,           CALIB_CNTR4_EDGE_050);
 
     camera_calibration.gains = gain_lo | (gain_hi << 4);
+    camera_calibration.reference_hash = calib_reference_hash();
 #endif
+}
+
+bool camera_calibration_is_current(void) BANKED {
+    if (!camera_is_calibrated()) return false;
+    calib_load_references();                        // leaves an image bank selected
+    bool current = (camera_calibration.reference_hash == calib_reference_hash());
+    CAMERA_SWITCH_RAM(CAMERA_BANK_REGISTERS);
+    return current;
 }
