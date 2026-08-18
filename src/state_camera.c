@@ -156,27 +156,132 @@ static scrollbar_t ss_brightness;
 #define SS_CONTRAST_LEN     16
 static scrollbar_t ss_contrast;
 
+/** Exposure ladder, one twentieth of a stop per step.
+
+    A true geometric series, so every step is the same perceptual increment and a held
+    ramp feels linear. Values are generated in register counts and labelled in
+    microseconds through the exact conversion, so the numbers shown are real exposure
+    times rather than the 4.9% overestimate the old flat 16us conversion produced.
+
+    Below about 1.4 ms the register cannot express a twentieth of a stop -- at 17 counts
+    a single increment is already 0.083 stops -- so the bottom of the ladder falls back
+    to single-count steps, which is the finest the hardware has.
+*/
 static const uint16_t exposures[] = {
-    TO_EXPOSURE_VALUE(256),     TO_EXPOSURE_VALUE(272),     TO_EXPOSURE_VALUE(304),     TO_EXPOSURE_VALUE(352),
-    TO_EXPOSURE_VALUE(400),     TO_EXPOSURE_VALUE(464),     TO_EXPOSURE_VALUE(512),     TO_EXPOSURE_VALUE(560),
-    TO_EXPOSURE_VALUE(608),     TO_EXPOSURE_VALUE(704),     TO_EXPOSURE_VALUE(800),     TO_EXPOSURE_VALUE(912),
-    TO_EXPOSURE_VALUE(1008),    TO_EXPOSURE_VALUE(1136),    TO_EXPOSURE_VALUE(1264),    TO_EXPOSURE_VALUE(1376),
-    TO_EXPOSURE_VALUE(1504),    TO_EXPOSURE_VALUE(1744),    TO_EXPOSURE_VALUE(2000),    TO_EXPOSURE_VALUE(2256),
-    TO_EXPOSURE_VALUE(2512),    TO_EXPOSURE_VALUE(2752),    TO_EXPOSURE_VALUE(3008),    TO_EXPOSURE_VALUE(3504),
-    TO_EXPOSURE_VALUE(4000),    TO_EXPOSURE_VALUE(4496),    TO_EXPOSURE_VALUE(5008),    TO_EXPOSURE_VALUE(5504),
-    TO_EXPOSURE_VALUE(6000),    TO_EXPOSURE_VALUE(7008),    TO_EXPOSURE_VALUE(8000),    TO_EXPOSURE_VALUE(9008),
-    TO_EXPOSURE_VALUE(10000),   TO_EXPOSURE_VALUE(11264),   TO_EXPOSURE_VALUE(12512),   TO_EXPOSURE_VALUE(13760),
-    TO_EXPOSURE_VALUE(15008),   TO_EXPOSURE_VALUE(17504),   TO_EXPOSURE_VALUE(20000),   TO_EXPOSURE_VALUE(22496),
-    TO_EXPOSURE_VALUE(25008),   TO_EXPOSURE_VALUE(27504),   TO_EXPOSURE_VALUE(30000),   TO_EXPOSURE_VALUE(35008),
-    TO_EXPOSURE_VALUE(40000),   TO_EXPOSURE_VALUE(45008),   TO_EXPOSURE_VALUE(50000),   TO_EXPOSURE_VALUE(55008),
-    TO_EXPOSURE_VALUE(60000),   TO_EXPOSURE_VALUE(65008),   TO_EXPOSURE_VALUE(70000),   TO_EXPOSURE_VALUE(75008),
-    TO_EXPOSURE_VALUE(80000),   TO_EXPOSURE_VALUE(90000),   TO_EXPOSURE_VALUE(100000),  TO_EXPOSURE_VALUE(112496),
-    TO_EXPOSURE_VALUE(125008),  TO_EXPOSURE_VALUE(142496),  TO_EXPOSURE_VALUE(160000),  TO_EXPOSURE_VALUE(180000),
-    TO_EXPOSURE_VALUE(200000),  TO_EXPOSURE_VALUE(225008),  TO_EXPOSURE_VALUE(250000),  TO_EXPOSURE_VALUE(275008),
-    TO_EXPOSURE_VALUE(300000),  TO_EXPOSURE_VALUE(350000),  TO_EXPOSURE_VALUE(400000),  TO_EXPOSURE_VALUE(450000),
-    TO_EXPOSURE_VALUE(500000),  TO_EXPOSURE_VALUE(550000),  TO_EXPOSURE_VALUE(600000),  TO_EXPOSURE_VALUE(700000),
-    TO_EXPOSURE_VALUE(800000),  TO_EXPOSURE_VALUE(900000),  TO_EXPOSURE_VALUE(1000000), TO_EXPOSURE_VALUE(1048560)
+    TO_EXPOSURE_VALUE(244), TO_EXPOSURE_VALUE(259), TO_EXPOSURE_VALUE(275), TO_EXPOSURE_VALUE(290),
+    TO_EXPOSURE_VALUE(305), TO_EXPOSURE_VALUE(320), TO_EXPOSURE_VALUE(336), TO_EXPOSURE_VALUE(351),
+    TO_EXPOSURE_VALUE(366), TO_EXPOSURE_VALUE(381), TO_EXPOSURE_VALUE(397), TO_EXPOSURE_VALUE(412),
+    TO_EXPOSURE_VALUE(427), TO_EXPOSURE_VALUE(443), TO_EXPOSURE_VALUE(458), TO_EXPOSURE_VALUE(473),
+    TO_EXPOSURE_VALUE(488), TO_EXPOSURE_VALUE(504), TO_EXPOSURE_VALUE(519), TO_EXPOSURE_VALUE(534),
+    TO_EXPOSURE_VALUE(549), TO_EXPOSURE_VALUE(565), TO_EXPOSURE_VALUE(580), TO_EXPOSURE_VALUE(595),
+    TO_EXPOSURE_VALUE(610), TO_EXPOSURE_VALUE(626), TO_EXPOSURE_VALUE(641), TO_EXPOSURE_VALUE(656),
+    TO_EXPOSURE_VALUE(687), TO_EXPOSURE_VALUE(717), TO_EXPOSURE_VALUE(748), TO_EXPOSURE_VALUE(778),
+    TO_EXPOSURE_VALUE(809), TO_EXPOSURE_VALUE(839), TO_EXPOSURE_VALUE(870), TO_EXPOSURE_VALUE(900),
+    TO_EXPOSURE_VALUE(931), TO_EXPOSURE_VALUE(961), TO_EXPOSURE_VALUE(992), TO_EXPOSURE_VALUE(1022),
+    TO_EXPOSURE_VALUE(1053), TO_EXPOSURE_VALUE(1083), TO_EXPOSURE_VALUE(1129), TO_EXPOSURE_VALUE(1175),
+    TO_EXPOSURE_VALUE(1221), TO_EXPOSURE_VALUE(1266), TO_EXPOSURE_VALUE(1312), TO_EXPOSURE_VALUE(1358),
+    TO_EXPOSURE_VALUE(1404), TO_EXPOSURE_VALUE(1450), TO_EXPOSURE_VALUE(1495), TO_EXPOSURE_VALUE(1541),
+    TO_EXPOSURE_VALUE(1602), TO_EXPOSURE_VALUE(1663), TO_EXPOSURE_VALUE(1724), TO_EXPOSURE_VALUE(1785),
+    TO_EXPOSURE_VALUE(1846), TO_EXPOSURE_VALUE(1907), TO_EXPOSURE_VALUE(1968), TO_EXPOSURE_VALUE(2045),
+    TO_EXPOSURE_VALUE(2121), TO_EXPOSURE_VALUE(2197), TO_EXPOSURE_VALUE(2274), TO_EXPOSURE_VALUE(2350),
+    TO_EXPOSURE_VALUE(2426), TO_EXPOSURE_VALUE(2518), TO_EXPOSURE_VALUE(2609), TO_EXPOSURE_VALUE(2701),
+    TO_EXPOSURE_VALUE(2792), TO_EXPOSURE_VALUE(2884), TO_EXPOSURE_VALUE(2991), TO_EXPOSURE_VALUE(3098),
+    TO_EXPOSURE_VALUE(3204), TO_EXPOSURE_VALUE(3311), TO_EXPOSURE_VALUE(3433), TO_EXPOSURE_VALUE(3555),
+    TO_EXPOSURE_VALUE(3677), TO_EXPOSURE_VALUE(3799), TO_EXPOSURE_VALUE(3937), TO_EXPOSURE_VALUE(4074),
+    TO_EXPOSURE_VALUE(4211), TO_EXPOSURE_VALUE(4364), TO_EXPOSURE_VALUE(4517), TO_EXPOSURE_VALUE(4669),
+    TO_EXPOSURE_VALUE(4837), TO_EXPOSURE_VALUE(5005), TO_EXPOSURE_VALUE(5188), TO_EXPOSURE_VALUE(5371),
+    TO_EXPOSURE_VALUE(5554), TO_EXPOSURE_VALUE(5753), TO_EXPOSURE_VALUE(5951), TO_EXPOSURE_VALUE(6165),
+    TO_EXPOSURE_VALUE(6378), TO_EXPOSURE_VALUE(6607), TO_EXPOSURE_VALUE(6836), TO_EXPOSURE_VALUE(7080),
+    TO_EXPOSURE_VALUE(7324), TO_EXPOSURE_VALUE(7584), TO_EXPOSURE_VALUE(7858), TO_EXPOSURE_VALUE(8133),
+    TO_EXPOSURE_VALUE(8423), TO_EXPOSURE_VALUE(8713), TO_EXPOSURE_VALUE(9018), TO_EXPOSURE_VALUE(9338),
+    TO_EXPOSURE_VALUE(9674), TO_EXPOSURE_VALUE(10010), TO_EXPOSURE_VALUE(10361), TO_EXPOSURE_VALUE(10727),
+    TO_EXPOSURE_VALUE(11108), TO_EXPOSURE_VALUE(11505), TO_EXPOSURE_VALUE(11917), TO_EXPOSURE_VALUE(12344),
+    TO_EXPOSURE_VALUE(12787), TO_EXPOSURE_VALUE(13245), TO_EXPOSURE_VALUE(13718), TO_EXPOSURE_VALUE(14206),
+    TO_EXPOSURE_VALUE(14709), TO_EXPOSURE_VALUE(15228), TO_EXPOSURE_VALUE(15762), TO_EXPOSURE_VALUE(16312),
+    TO_EXPOSURE_VALUE(16891), TO_EXPOSURE_VALUE(17487), TO_EXPOSURE_VALUE(18097), TO_EXPOSURE_VALUE(18738),
+    TO_EXPOSURE_VALUE(19394), TO_EXPOSURE_VALUE(20081), TO_EXPOSURE_VALUE(20782), TO_EXPOSURE_VALUE(21515),
+    TO_EXPOSURE_VALUE(22278), TO_EXPOSURE_VALUE(23056), TO_EXPOSURE_VALUE(23865), TO_EXPOSURE_VALUE(24704),
+    TO_EXPOSURE_VALUE(25574), TO_EXPOSURE_VALUE(26474), TO_EXPOSURE_VALUE(27405), TO_EXPOSURE_VALUE(28366),
+    TO_EXPOSURE_VALUE(29373), TO_EXPOSURE_VALUE(30411), TO_EXPOSURE_VALUE(31479), TO_EXPOSURE_VALUE(32593),
+    TO_EXPOSURE_VALUE(33737), TO_EXPOSURE_VALUE(34927), TO_EXPOSURE_VALUE(36163), TO_EXPOSURE_VALUE(37445),
+    TO_EXPOSURE_VALUE(38773), TO_EXPOSURE_VALUE(40146), TO_EXPOSURE_VALUE(41565), TO_EXPOSURE_VALUE(43030),
+    TO_EXPOSURE_VALUE(44540), TO_EXPOSURE_VALUE(46112), TO_EXPOSURE_VALUE(47745), TO_EXPOSURE_VALUE(49423),
+    TO_EXPOSURE_VALUE(51163), TO_EXPOSURE_VALUE(52963), TO_EXPOSURE_VALUE(54825), TO_EXPOSURE_VALUE(56763),
+    TO_EXPOSURE_VALUE(58762), TO_EXPOSURE_VALUE(60837), TO_EXPOSURE_VALUE(62988), TO_EXPOSURE_VALUE(65216),
+    TO_EXPOSURE_VALUE(67520), TO_EXPOSURE_VALUE(69901), TO_EXPOSURE_VALUE(72372), TO_EXPOSURE_VALUE(74921),
+    TO_EXPOSURE_VALUE(77560), TO_EXPOSURE_VALUE(80292), TO_EXPOSURE_VALUE(83130), TO_EXPOSURE_VALUE(86060),
+    TO_EXPOSURE_VALUE(89096), TO_EXPOSURE_VALUE(92239), TO_EXPOSURE_VALUE(95490), TO_EXPOSURE_VALUE(98862),
+    TO_EXPOSURE_VALUE(102341), TO_EXPOSURE_VALUE(105957), TO_EXPOSURE_VALUE(109695), TO_EXPOSURE_VALUE(113571),
+    TO_EXPOSURE_VALUE(117569), TO_EXPOSURE_VALUE(121719), TO_EXPOSURE_VALUE(126007), TO_EXPOSURE_VALUE(130447),
+    TO_EXPOSURE_VALUE(135040), TO_EXPOSURE_VALUE(139801), TO_EXPOSURE_VALUE(144730), TO_EXPOSURE_VALUE(149826),
+    TO_EXPOSURE_VALUE(155106), TO_EXPOSURE_VALUE(160568), TO_EXPOSURE_VALUE(166229), TO_EXPOSURE_VALUE(172089),
+    TO_EXPOSURE_VALUE(178162), TO_EXPOSURE_VALUE(184448), TO_EXPOSURE_VALUE(190948), TO_EXPOSURE_VALUE(197678),
+    TO_EXPOSURE_VALUE(204651), TO_EXPOSURE_VALUE(211868), TO_EXPOSURE_VALUE(219345), TO_EXPOSURE_VALUE(227081),
+    TO_EXPOSURE_VALUE(235092), TO_EXPOSURE_VALUE(243378), TO_EXPOSURE_VALUE(251953), TO_EXPOSURE_VALUE(260834),
+    TO_EXPOSURE_VALUE(270035), TO_EXPOSURE_VALUE(279556), TO_EXPOSURE_VALUE(289413), TO_EXPOSURE_VALUE(299622),
+    TO_EXPOSURE_VALUE(310181), TO_EXPOSURE_VALUE(321121), TO_EXPOSURE_VALUE(332443), TO_EXPOSURE_VALUE(344162),
+    TO_EXPOSURE_VALUE(356293), TO_EXPOSURE_VALUE(368851), TO_EXPOSURE_VALUE(381851), TO_EXPOSURE_VALUE(395325),
+    TO_EXPOSURE_VALUE(409271), TO_EXPOSURE_VALUE(423706), TO_EXPOSURE_VALUE(438644), TO_EXPOSURE_VALUE(454117),
+    TO_EXPOSURE_VALUE(470139), TO_EXPOSURE_VALUE(486725), TO_EXPOSURE_VALUE(503891), TO_EXPOSURE_VALUE(521667),
+    TO_EXPOSURE_VALUE(540070), TO_EXPOSURE_VALUE(559113), TO_EXPOSURE_VALUE(578827), TO_EXPOSURE_VALUE(599243),
+    TO_EXPOSURE_VALUE(620377), TO_EXPOSURE_VALUE(642258), TO_EXPOSURE_VALUE(664902), TO_EXPOSURE_VALUE(688354),
+    TO_EXPOSURE_VALUE(712631), TO_EXPOSURE_VALUE(737762), TO_EXPOSURE_VALUE(763779), TO_EXPOSURE_VALUE(790710),
+    TO_EXPOSURE_VALUE(818588), TO_EXPOSURE_VALUE(847458), TO_EXPOSURE_VALUE(877350), TO_EXPOSURE_VALUE(908295),
+    TO_EXPOSURE_VALUE(940323), TO_EXPOSURE_VALUE(973480), TO_EXPOSURE_VALUE(999985)
 };
+/** Hold-to-accelerate for the adjustable fields.
+
+    The joypad is interrupt driven and `joy` is consumed on every read, so it is not a
+    level signal -- KEY_DOWN reads false on most frames even while the button is held,
+    and cannot be used to tell a held key from a released one. What is reliable is the
+    spacing of the changes themselves: they arrive one per autorepeat interval while the
+    key is down, and stop when it comes up. So the ramp advances on each change and
+    resets when a gap longer than a couple of intervals appears.
+*/
+#define EXPOSURE_RAMP_TIMEOUT (AUTOREPEAT_RATE * 3)
+static uint8_t exposure_ramp = 0;
+static uint16_t exposure_ramp_ts = 0;
+static camera_menu_e exposure_ramp_field = idNone;
+static change_direction_e exposure_ramp_dir = changeNone;
+
+/** Find the ladder entry matching an exposure value.
+
+    The index and the exposure are stored separately, so anything that moves the exposure
+    without going through the ladder -- the one-shot autoexposure, or a save written by a
+    build with a different table -- leaves them disagreeing. Resyncing avoids the next
+    D-pad press jumping to wherever the stale index happened to point.
+*/
+static uint8_t exposure_index_for(uint16_t exposure) {
+    for (uint8_t i = 0; i != LENGTH(exposures); i++)
+        if (exposures[i] >= exposure) return i;
+    return MAX_INDEX(exposures);
+}
+
+static uint8_t menu_ramp_multiplier(camera_menu_e field, change_direction_e dir) {
+    /* A ramp is a sustained push one way. A different field, a gap in the changes, or a
+       reversal all mean this is not that: toggling up and down is someone dialling in a
+       value a step at a time, and accelerating it would be exactly wrong. */
+    if ((field != exposure_ramp_field) || (dir != exposure_ramp_dir) ||
+        ((uint16_t)(sys_time - exposure_ramp_ts) > EXPOSURE_RAMP_TIMEOUT))
+        exposure_ramp = 0;
+    exposure_ramp_field = field;
+    exposure_ramp_dir = dir;
+    exposure_ramp_ts = sys_time;
+    if (exposure_ramp < 255) exposure_ramp++;
+    // x1, x2, x3, x4 then x6 -- roughly half a second per tier at the autorepeat rate
+    return (exposure_ramp <= 2) ? 2 :
+           (exposure_ramp <= 4) ? 4 :
+           (exposure_ramp <= 6) ? 6 :
+           (exposure_ramp <= 9) ? 8 : 12;
+}
+
+static uint8_t exposure_ramp_step(change_direction_e dir) {
+    // one ladder step in manual, two in assisted, as before -- the multiplier scales both
+    return (uint8_t)(((OPTION(camera_mode) == camera_mode_manual) ? 1 : 2) * menu_ramp_multiplier(idExposure, dir));
+}
+
+
+
 static const table_value_t gains[] = {
     { CAM01_GAIN_140, "14.0" }, { CAM01_GAIN_155, "15.5" }, { CAM01_GAIN_170, "17.0" }, { CAM01_GAIN_185, "18.5" },
     { CAM01_GAIN_200, "20.0" }, { CAM01_GAIN_215, "21.5" }, { CAM01_GAIN_230, "23.0" }, { CAM01_GAIN_245, "24.5" },
@@ -594,6 +699,9 @@ uint8_t ENTER_state_camera(void) BANKED {
     COUNTER_RESET(camera_shutter_timer);
     COUNTER_RESET(camera_AEB_counter);
     COUNTER_RESET(camera_repeat_counter);
+    // keep each mode's ladder index in step with its stored exposure
+    for (uint8_t m = 0; m != N_CAMERA_MODES; m++)
+        current_settings[m].current_exposure_idx = exposure_index_for(current_settings[m].current_exposure);
     // the band ladder's hysteresis is only meaningful against a band this session
     // actually selected, so start it from the exposure that is about to be loaded
     reset_autoexp_band();
@@ -952,7 +1060,11 @@ uint8_t onIdleCameraMenu(const struct menu_t * menu, const struct menu_item_t * 
         // perform changes when pressing UP/DOWN while menu item with some ID is active
         switch (selection_item_id) {
             case idExposure:
-                if (settings_changed = inc_dec_int8(&SETTING(current_exposure_idx), (OPTION(camera_mode) == camera_mode_manual) ? 1 : 2, 0, MAX_INDEX(exposures), change_direction)) {
+                /* Accelerate while the key stays down. A tenth of a stop is deliberately
+                   fine for nudging, which would make crossing the range tedious at a fixed
+                   rate, so the step grows the longer the ramp runs and resets the moment
+                   the key comes up. Assisted mode starts one notch coarser, as before. */
+                if (settings_changed = inc_dec_uint8(&SETTING(current_exposure_idx), exposure_ramp_step(change_direction), 0, MAX_INDEX(exposures), change_direction)) {
                     SETTING(current_exposure) = exposures[SETTING(current_exposure_idx)];
                     switch (OPTION(camera_mode)) {
                         case camera_mode_assisted:
@@ -969,7 +1081,7 @@ uint8_t onIdleCameraMenu(const struct menu_t * menu, const struct menu_item_t * 
                 if (settings_changed = inc_dec_int8(&SETTING(current_gain), 1, 0, MAX_INDEX(gains), change_direction)) RENDER_CAM_REG_EDEXOPGAIN();
                 break;
             case idVOut:
-                if (settings_changed = inc_dec_int16(&SETTING(voltage_out), VOLTAGE_OUT_STEP, MIN_VOLTAGE_OUT, MAX_VOLTAGE_OUT, change_direction)) RENDER_CAM_REG_ZEROVOUT();
+                if (settings_changed = inc_dec_int16(&SETTING(voltage_out), VOLTAGE_OUT_STEP * menu_ramp_multiplier(idVOut, change_direction), MIN_VOLTAGE_OUT, MAX_VOLTAGE_OUT, change_direction)) RENDER_CAM_REG_ZEROVOUT();
                 break;
             case idDither:
                 temp_uint8 = SETTING(dithering);
@@ -1198,18 +1310,13 @@ uint8_t onIdleCameraMenu(const struct menu_t * menu, const struct menu_item_t * 
             #if defined(NINTENDO)
             if ((one_iteration_autoexp) && ((JOYPAD_LAST() & J_START) == 0)) {
                 one_iteration_autoexp = false;
-                // restore exposure index from exposure
-                for (uint8_t i = 0; i <= MAX_INDEX(exposures); i += (OPTION(camera_mode) == camera_mode_manual) ? 1 : 2) {
-                    if (exposures[i] > SETTING(current_exposure)) {
-                        SETTING(current_exposure_idx) = i;
-                        SETTING(current_exposure) = exposures[SETTING(current_exposure_idx)];
-                        // snapping to the nearest table entry can cross several bands at
-                        // once, so let the ladder reselect from scratch instead of walking
-                        reset_autoexp_band();
-                        render_registers = true;
-                        break;
-                    }
-                }
+                // put the ladder index back in step with the exposure the servo settled on
+                SETTING(current_exposure_idx) = exposure_index_for(SETTING(current_exposure));
+                SETTING(current_exposure) = exposures[SETTING(current_exposure_idx)];
+                // snapping to a ladder entry can cross several bands at once, so let the
+                // ladder reselect from scratch instead of walking one rung at a time
+                reset_autoexp_band();
+                render_registers = true;
                 // redraw menu
                 PLAY_SFX(sound_menu_alter);
                 menu_redraw(menu, NULL, selection);
