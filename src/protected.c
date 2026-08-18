@@ -266,46 +266,78 @@ static void fill_inc(uint8_t * array, uint8_t size) {
     for (uint8_t i = 0; (i < size); *array++ = i++);
 }
 
+/** Repairing a protected block without throwing away what is in it.
+
+    Every protected block is followed by its magic and checksum and then by a full echo
+    of both. The camera only validates the magic and the checksum -- it does not care
+    what the data says -- so a block whose checksum has gone bad is made safe simply by
+    stamping a fresh magic and recomputing, with the contents left alone. Zeroing was
+    never needed for that, and it discarded counters, scores, owner details and image
+    comments to fix something none of them caused.
+
+    The echo exists so that a block damaged in one copy can be recovered from the other,
+    which the old code never attempted: it overwrote the good copy with the zeroed one.
+    Preference order is therefore restore, then re-seal, and never discard.
+*/
+#define BLOCK_ECHO(DATA, LEN) ((uint8_t *)(DATA) + PROTECTED_BLOCK_SIZE(LEN))
+
+static bool block_is_valid(uint8_t * data, uint8_t length) {
+    return (((cam_magic_struct_t *)(data + length))->crc == protected_checksum(data, length));
+}
+
+// stamp a fresh magic and checksum over the current contents, then mirror to the echo
+static void block_seal(uint8_t * data, uint8_t length) {
+    cam_magic_struct_t * m = (cam_magic_struct_t *)(data + length);
+    *m = block_magic;
+    m->crc = protected_checksum(data, length);
+    memcpy(BLOCK_ECHO(data, length), data, PROTECTED_BLOCK_SIZE(length));
+}
+
+/** Returns true when the block needed work. A damaged primary is restored from a good
+    echo first; if both copies are bad the contents are kept and only re-sealed.
+*/
+static bool block_repair(uint8_t * data, uint8_t length) {
+    bool primary_ok = block_is_valid(data, length);
+    bool echo_ok = block_is_valid(BLOCK_ECHO(data, length), length);
+    if (primary_ok && echo_ok) return false;
+    if (!primary_ok && echo_ok) memcpy(data, BLOCK_ECHO(data, length), length);
+    block_seal(data, length);
+    return true;
+}
+
+/** The slot vector is the one block whose contents the camera acts on rather than just
+    checksums, so garbage here can misdirect the gallery. Every entry must be a slot
+    number in range or the empty marker, and no image number may appear twice.
+*/
+static bool vector_is_plausible(uint8_t * v, uint8_t length) {
+    uint8_t seen[VECTOR_LENGTH];
+    memset(seen, 0, sizeof(seen));
+    for (uint8_t i = 0; i != length; i++) {
+        if (v[i] == CAMERA_IMAGE_DELETED) continue;
+        if (v[i] >= length) return false;
+        if (seen[v[i]]) return false;
+        seen[v[i]] = 1;
+    }
+    return true;
+}
+
 uint8_t INIT_module_protected(void) BANKED {
     CAMERA_SWITCH_RAM(CAMERA_BANK_LAST_SEEN);
-    if (prot_album_crc.crc != protected_checksum(&prot_album, ALBUM_LENGTH)) {
-        memset(&prot_album, 0, ALBUM_LENGTH);
-        prot_album_crc = block_magic;
-        prot_album_crc.crc = protected_checksum(&prot_album, ALBUM_LENGTH);
-        memcpy(&prot_album_echo, &prot_album, PROTECTED_BLOCK_SIZE(ALBUM_LENGTH));
-        protected_status |= PROTECTED_REPAIR_ALBUM;
-    }
-    if (prot_vector_crc.crc != protected_checksum(&prot_vector, VECTOR_LENGTH)) {
-        fill_inc(&prot_vector, VECTOR_LENGTH);
-        prot_vector_crc = block_magic;
-        prot_vector_crc.crc = protected_checksum(&prot_vector, VECTOR_LENGTH);
-        memcpy(&prot_vector_echo, &prot_vector, PROTECTED_BLOCK_SIZE(VECTOR_LENGTH));
+    if (block_repair((uint8_t *)&prot_album, ALBUM_LENGTH)) protected_status |= PROTECTED_REPAIR_ALBUM;
+    if (block_repair((uint8_t *)&prot_vector, VECTOR_LENGTH)) {
+        // only rebuild the list outright when what survived cannot be trusted
+        if (!vector_is_plausible((uint8_t *)&prot_vector, VECTOR_LENGTH)) {
+            fill_inc((uint8_t *)&prot_vector, VECTOR_LENGTH);
+            block_seal((uint8_t *)&prot_vector, VECTOR_LENGTH);
+        }
         protected_status |= PROTECTED_REPAIR_VECTOR;
     }
     CAMERA_SWITCH_RAM(CAMERA_BANK_OWNER_DATA);
-    if (prot_owner_crc.crc != protected_checksum(&prot_owner, OWNER_LENGTH)) {
-        memset(&prot_owner, 0, OWNER_LENGTH);
-        prot_owner_crc = block_magic;
-        prot_owner_crc.crc = protected_checksum(&prot_owner, OWNER_LENGTH);
-        memcpy(&prot_owner_echo, &prot_owner, PROTECTED_BLOCK_SIZE(OWNER_LENGTH));
-        protected_status |= PROTECTED_REPAIR_OWNER;
-    }
+    if (block_repair((uint8_t *)&prot_owner, OWNER_LENGTH)) protected_status |= PROTECTED_REPAIR_OWNER;
     for (uint8_t i = 1; i != 16; i++) {
         CAMERA_SWITCH_RAM(i);
-        if (image0_owner_crc.crc != protected_checksum(&image0_owner, IMAGE0_OWNER_LENGTH)) {
-            memset(&image0_owner, 0, IMAGE0_OWNER_LENGTH);
-            image0_owner_crc = block_magic;
-            image0_owner_crc.crc = protected_checksum(&image0_owner, IMAGE0_OWNER_LENGTH);
-            memcpy(&image0_owner_echo, &image0_owner, PROTECTED_BLOCK_SIZE(IMAGE0_OWNER_LENGTH));
-            protected_status |= PROTECTED_REPAIR_META;
-        }
-        if (image1_owner_crc.crc != protected_checksum(&image1_owner, IMAGE1_OWNER_LENGTH)) {
-            memset(&image1_owner, 0, IMAGE1_OWNER_LENGTH);
-            image1_owner_crc = block_magic;
-            image1_owner_crc.crc = protected_checksum(&image1_owner, IMAGE1_OWNER_LENGTH);
-            memcpy(&image1_owner_echo, &image1_owner, PROTECTED_BLOCK_SIZE(IMAGE1_OWNER_LENGTH));
-            protected_status |= PROTECTED_REPAIR_META;
-        }
+        if (block_repair((uint8_t *)&image0_owner, IMAGE0_OWNER_LENGTH)) protected_status |= PROTECTED_REPAIR_META;
+        if (block_repair((uint8_t *)&image1_owner, IMAGE1_OWNER_LENGTH)) protected_status |= PROTECTED_REPAIR_META;
     }
     /* Repair the calibration only if it is actually damaged. It used to be rewritten
        whenever any unrelated block had been repaired, which threw away measured
@@ -336,10 +368,10 @@ uint8_t INIT_module_protected(void) BANKED {
 }
 
 const uint8_t * const repair_messages[] = {
-    "  Reset album data...\tOK!",
-    "  Undelete images...\tOK!",
-    "  Reset owner info...\tOK!",
-    "  Reset images meta...\tOK!",
+    "  Repair album data...\tOK!",
+    "  Repair image list...\tOK!",
+    "  Repair owner info...\tOK!",
+    "  Repair images meta...\tOK!",
     "  Restore calibration...\tOK!",
     "  Reset calibration...\tOK!"
 };
