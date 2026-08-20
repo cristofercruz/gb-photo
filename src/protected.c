@@ -231,76 +231,145 @@ static void AT(IMAGE1_OWNER_ADDRESS + PROTECTED_BLOCK_SIZE(IMAGE1_OWNER_LENGTH))
 static void AT(0xaff2) calibration;
 #define CALIBRATION_ECHO_BANK 8
 static void AT(0xbff2) calibration_echo;
-const uint8_t default_calibration[] = {125, 125, 124, 126, 124, 125, 124, 122, 123, 121, 118, 104, 194, 60};
+
+#define CALIBRATION_REFS 12
+#define CALIBRATION_SUM_SEED 0x0D
+#define CALIBRATION_XOR_SEED 0x23
+
+/** The check the stored calibration block carries: a running sum plus $0D and a running
+    xor plus $23, in the two bytes that follow the twelve references. */
+static bool calibration_is_valid(const uint8_t * block) {
+    uint8_t sum = 0, parity = 0;
+    for (uint8_t i = 0; i != CALIBRATION_REFS; i++) {
+        sum += block[i];
+        parity ^= block[i];
+    }
+    return (((uint8_t)(sum + CALIBRATION_SUM_SEED) == block[CALIBRATION_REFS]) &&
+            ((uint8_t)(parity + CALIBRATION_XOR_SEED) == block[CALIBRATION_REFS + 1]));
+}
 
 uint8_t protected_status = PROTECTED_CORRECT;
+static uint8_t rescued_calibration[CALIBRATION_REFS + 2];
 
 static void fill_inc(uint8_t * array, uint8_t size) {
     for (uint8_t i = 0; (i < size); *array++ = i++);
 }
 
+/** Repairing a protected block without throwing away what is in it.
+
+    Every protected block is followed by its magic and checksum and then by a full echo
+    of both. The camera only validates the magic and the checksum -- it does not care
+    what the data says -- so a block whose checksum has gone bad is made safe simply by
+    stamping a fresh magic and recomputing, with the contents left alone. Zeroing was
+    never needed for that, and it discarded counters, scores, owner details and image
+    comments to fix something none of them caused.
+
+    The echo exists so that a block damaged in one copy can be recovered from the other,
+    which the old code never attempted: it overwrote the good copy with the zeroed one.
+    Preference order is therefore restore, then re-seal, and never discard.
+*/
+#define BLOCK_ECHO(DATA, LEN) ((uint8_t *)(DATA) + PROTECTED_BLOCK_SIZE(LEN))
+
+static bool block_is_valid(uint8_t * data, uint8_t length) {
+    return (((cam_magic_struct_t *)(data + length))->crc == protected_checksum(data, length));
+}
+
+// stamp a fresh magic and checksum over the current contents, then mirror to the echo
+static void block_seal(uint8_t * data, uint8_t length) {
+    cam_magic_struct_t * m = (cam_magic_struct_t *)(data + length);
+    *m = block_magic;
+    m->crc = protected_checksum(data, length);
+    memcpy(BLOCK_ECHO(data, length), data, PROTECTED_BLOCK_SIZE(length));
+}
+
+/** Returns true when the block needed work. A damaged primary is restored from a good
+    echo first; if both copies are bad the contents are kept and only re-sealed.
+*/
+static bool block_repair(uint8_t * data, uint8_t length) {
+    bool primary_ok = block_is_valid(data, length);
+    bool echo_ok = block_is_valid(BLOCK_ECHO(data, length), length);
+    if (primary_ok && echo_ok) return false;
+    if (!primary_ok && echo_ok) memcpy(data, BLOCK_ECHO(data, length), length);
+    block_seal(data, length);
+    return true;
+}
+
+/** The slot vector is the one block whose contents the camera acts on rather than just
+    checksums, so garbage here can misdirect the gallery. Every entry must be a slot
+    number in range or the empty marker, and no image number may appear twice.
+*/
+static bool vector_is_plausible(uint8_t * v, uint8_t length) {
+    uint8_t seen[VECTOR_LENGTH];
+    memset(seen, 0, sizeof(seen));
+    for (uint8_t i = 0; i != length; i++) {
+        if (v[i] == CAMERA_IMAGE_DELETED) continue;
+        if (v[i] >= length) return false;
+        if (seen[v[i]]) return false;
+        seen[v[i]] = 1;
+    }
+    return true;
+}
+
 uint8_t INIT_module_protected(void) BANKED {
     CAMERA_SWITCH_RAM(CAMERA_BANK_LAST_SEEN);
-    if (prot_album_crc.crc != protected_checksum(&prot_album, ALBUM_LENGTH)) {
-        memset(&prot_album, 0, ALBUM_LENGTH);
-        prot_album_crc = block_magic;
-        prot_album_crc.crc = protected_checksum(&prot_album, ALBUM_LENGTH);
-        memcpy(&prot_album_echo, &prot_album, PROTECTED_BLOCK_SIZE(ALBUM_LENGTH));
-        protected_status |= PROTECTED_REPAIR_ALBUM;
-    }
-    if (prot_vector_crc.crc != protected_checksum(&prot_vector, VECTOR_LENGTH)) {
-        fill_inc(&prot_vector, VECTOR_LENGTH);
-        prot_vector_crc = block_magic;
-        prot_vector_crc.crc = protected_checksum(&prot_vector, VECTOR_LENGTH);
-        memcpy(&prot_vector_echo, &prot_vector, PROTECTED_BLOCK_SIZE(VECTOR_LENGTH));
+    if (block_repair((uint8_t *)&prot_album, ALBUM_LENGTH)) protected_status |= PROTECTED_REPAIR_ALBUM;
+    if (block_repair((uint8_t *)&prot_vector, VECTOR_LENGTH)) {
+        // only rebuild the list outright when what survived cannot be trusted
+        if (!vector_is_plausible((uint8_t *)&prot_vector, VECTOR_LENGTH)) {
+            fill_inc((uint8_t *)&prot_vector, VECTOR_LENGTH);
+            block_seal((uint8_t *)&prot_vector, VECTOR_LENGTH);
+        }
         protected_status |= PROTECTED_REPAIR_VECTOR;
     }
     CAMERA_SWITCH_RAM(CAMERA_BANK_OWNER_DATA);
-    if (prot_owner_crc.crc != protected_checksum(&prot_owner, OWNER_LENGTH)) {
-        memset(&prot_owner, 0, OWNER_LENGTH);
-        prot_owner_crc = block_magic;
-        prot_owner_crc.crc = protected_checksum(&prot_owner, OWNER_LENGTH);
-        memcpy(&prot_owner_echo, &prot_owner, PROTECTED_BLOCK_SIZE(OWNER_LENGTH));
-        protected_status |= PROTECTED_REPAIR_OWNER;
-    }
+    if (block_repair((uint8_t *)&prot_owner, OWNER_LENGTH)) protected_status |= PROTECTED_REPAIR_OWNER;
     for (uint8_t i = 1; i != 16; i++) {
         CAMERA_SWITCH_RAM(i);
-        if (image0_owner_crc.crc != protected_checksum(&image0_owner, IMAGE0_OWNER_LENGTH)) {
-            memset(&image0_owner, 0, IMAGE0_OWNER_LENGTH);
-            image0_owner_crc = block_magic;
-            image0_owner_crc.crc = protected_checksum(&image0_owner, IMAGE0_OWNER_LENGTH);
-            memcpy(&image0_owner_echo, &image0_owner, PROTECTED_BLOCK_SIZE(IMAGE0_OWNER_LENGTH));
-            protected_status |= PROTECTED_REPAIR_META;
-        }
-        if (image1_owner_crc.crc != protected_checksum(&image1_owner, IMAGE1_OWNER_LENGTH)) {
-            memset(&image1_owner, 0, IMAGE1_OWNER_LENGTH);
-            image1_owner_crc = block_magic;
-            image1_owner_crc.crc = protected_checksum(&image1_owner, IMAGE1_OWNER_LENGTH);
-            memcpy(&image1_owner_echo, &image1_owner, PROTECTED_BLOCK_SIZE(IMAGE1_OWNER_LENGTH));
-            protected_status |= PROTECTED_REPAIR_META;
-        }
+        if (block_repair((uint8_t *)&image0_owner, IMAGE0_OWNER_LENGTH)) protected_status |= PROTECTED_REPAIR_META;
+        if (block_repair((uint8_t *)&image1_owner, IMAGE1_OWNER_LENGTH)) protected_status |= PROTECTED_REPAIR_META;
     }
-    if (protected_status != PROTECTED_CORRECT) {
+    /* Recover the calibration from whichever copy survived, and otherwise leave it be.
+
+       The camera validates this block for its own use and silently falls back to values
+       it carries internally when it fails -- it never writes SRAM to repair it. Writing
+       a substitute here would be worse than doing nothing: it makes one particular
+       sensor's numbers look validly calibrated, so the camera trusts them instead of
+       falling back. An unreadable block is reported and left alone; recovering it needs
+       the factory procedure, a save full of $AA run in complete darkness. */
+    CAMERA_SWITCH_RAM(CALIBRATION_BANK);
+    bool primary_ok = calibration_is_valid((const uint8_t *)&calibration);
+    CAMERA_SWITCH_RAM(CALIBRATION_ECHO_BANK);
+    bool echo_ok = calibration_is_valid((const uint8_t *)&calibration_echo);
+
+    if (primary_ok && !echo_ok) {
         CAMERA_SWITCH_RAM(CALIBRATION_BANK);
-        memcpy(&calibration, default_calibration, sizeof(default_calibration));
+        memcpy(rescued_calibration, &calibration, sizeof(rescued_calibration));
         CAMERA_SWITCH_RAM(CALIBRATION_ECHO_BANK);
-        memcpy(&calibration_echo, default_calibration, sizeof(default_calibration));
+        memcpy(&calibration_echo, rescued_calibration, sizeof(rescued_calibration));
         protected_status |= PROTECTED_REPAIR_CAL;
+    } else if (echo_ok && !primary_ok) {
+        memcpy(rescued_calibration, &calibration_echo, sizeof(rescued_calibration));
+        CAMERA_SWITCH_RAM(CALIBRATION_BANK);
+        memcpy(&calibration, rescued_calibration, sizeof(rescued_calibration));
+        protected_status |= PROTECTED_REPAIR_CAL;
+    } else if (!primary_ok) {
+        protected_status |= PROTECTED_LOST_CAL;     // both gone; nothing to recover from
     }
     CAMERA_SWITCH_RAM(CAMERA_BANK_LAST_SEEN);
     return 0;
 }
 
 const uint8_t * const repair_messages[] = {
-    "  Reset album data...\tOK!",
-    "  Undelete images...\tOK!",
-    "  Reset owner info...\tOK!",
-    "  Reset images meta...\tOK!",
-    "  Reset calibration...\tOK!"
+    "  Repair album data...\tOK!",
+    "  Repair image list...\tOK!",
+    "  Repair owner info...\tOK!",
+    "  Repair images meta...\tOK!",
+    "  Restore calibration...\tOK!",
+    "  Calibration unreadable\t--"
 };
 
 uint8_t INIT_module_sysmessages(void) BANKED {
-    if ((!camera_settings_reset) && (protected_status == PROTECTED_CORRECT)) return 0;
+    if ((!camera_settings_reset) && ((protected_status & PROTECTED_REPAIRED_MASK) == 0)) return 0;
 
     sync_vblank();
     vwf_set_colors(DMG_WHITE, DMG_BLACK);
@@ -309,7 +378,7 @@ uint8_t INIT_module_sysmessages(void) BANKED {
     uint8_t y = 0;
 
     menu_text_out(0, y++, 0, WHITE_ON_BLACK, ITEM_DEFAULT, "Save file errors were detected.");
-    if (protected_status != PROTECTED_CORRECT) {
+    if (protected_status & PROTECTED_REPAIRED_MASK) {
         y++;
         menu_text_out(0, y++, 0, WHITE_ON_BLACK, ITEM_DEFAULT, "Fixing checksums to prevent wiping");
         menu_text_out(0, y++, 0, WHITE_ON_BLACK, ITEM_DEFAULT, "data by the original camera ROM.");

@@ -14,7 +14,16 @@
 #define PROTECTED_REPAIR_VECTOR 0x02
 #define PROTECTED_REPAIR_OWNER  0x04
 #define PROTECTED_REPAIR_META   0x08
-#define PROTECTED_REPAIR_CAL    0x10
+#define PROTECTED_REPAIR_CAL    0x10    // one copy survived and was mirrored back
+#define PROTECTED_LOST_CAL      0x20    // both copies unreadable; reported, not overwritten
+
+/* Which conditions actually warrant interrupting the boot. An unreadable calibration is
+   not one of them: nothing was changed, nothing is at risk, and the exposure code falls
+   back on its own. It is still listed if the screen appears for some other reason, so
+   the information is available without being an every-boot obstacle. */
+#define PROTECTED_REPAIRED_MASK (PROTECTED_REPAIR_ALBUM | PROTECTED_REPAIR_VECTOR | \
+                                 PROTECTED_REPAIR_OWNER  | PROTECTED_REPAIR_META   | \
+                                 PROTECTED_REPAIR_CAL)
 
 extern uint8_t protected_status;
 
