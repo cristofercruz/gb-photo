@@ -372,34 +372,41 @@ const menu_item_t AutoexpAreaSubMenuItems[] = {
     {
         .sub = NULL, .sub_params = NULL,
         .ofs_x = 1, .ofs_y = 1, .width = 9,
+        .caption = " Overall",
+        .helpcontext = " Meter the whole frame",
+        .onPaint = NULL,
+        .result = ACTION_AUTOEXP_OVERALL
+    }, {
+        .sub = NULL, .sub_params = NULL,
+        .ofs_x = 1, .ofs_y = 2, .width = 9,
         .caption = " Center",
         .helpcontext = " Center exposure area",
         .onPaint = NULL,
         .result = ACTION_AUTOEXP_CENTER
     }, {
         .sub = NULL, .sub_params = NULL,
-        .ofs_x = 1, .ofs_y = 2, .width = 9,
+        .ofs_x = 1, .ofs_y = 3, .width = 9,
         .caption = " Top",
         .helpcontext = " Top exposure area",
         .onPaint = NULL,
         .result = ACTION_AUTOEXP_TOP
     }, {
         .sub = NULL, .sub_params = NULL,
-        .ofs_x = 1, .ofs_y = 3, .width = 9,
+        .ofs_x = 1, .ofs_y = 4, .width = 9,
         .caption = " Right",
         .helpcontext = " Right exposure area",
         .onPaint = NULL,
         .result = ACTION_AUTOEXP_RIGHT
     }, {
         .sub = NULL, .sub_params = NULL,
-        .ofs_x = 1, .ofs_y = 4, .width = 9,
+        .ofs_x = 1, .ofs_y = 5, .width = 9,
         .caption = " Bottom",
         .helpcontext = " Bottom exposure area",
         .onPaint = NULL,
         .result = ACTION_AUTOEXP_BOTTOM
     }, {
         .sub = NULL, .sub_params = NULL,
-        .ofs_x = 1, .ofs_y = 5, .width = 9,
+        .ofs_x = 1, .ofs_y = 6, .width = 9,
         .caption = " Left",
         .helpcontext = " Left exposure area",
         .onPaint = NULL,
@@ -708,7 +715,8 @@ uint8_t * onCameraPopupMenuItemPaint(const struct menu_t * menu, const struct me
         [area_top]                      = "[Top]",
         [area_right]                    = "[Right]",
         [area_bottom]                   = "[Bottom]",
-        [area_left]                     = "[Left]"
+        [area_left]                     = "[Left]",
+        [area_overall]                  = "[Overall]"
     };
     static const uint8_t * const dither_patterns[N_DITHER_TYPES] = {
         [dither_type_Off]               = "[Off]",

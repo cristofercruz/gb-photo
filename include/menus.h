@@ -85,6 +85,17 @@ inline uint8_t inc_dec_int8(int8_t * value, int8_t delta, int8_t min, int8_t max
             return FALSE;
     }
 }
+inline uint8_t inc_dec_uint8(uint8_t * value, uint8_t delta, uint8_t min, uint8_t max, change_direction_e dir) {
+    uint8_t v = *value;
+    switch (dir) {
+        case changeDecrease:
+            return (v != (*value = (v < (uint8_t)(min + delta)) ? max : (uint8_t)(v - delta)));
+        case changeIncrease:
+            return (v != (*value = (v > (uint8_t)(max - delta)) ? min : (uint8_t)(v + delta)));
+        default:
+            return FALSE;
+    }
+}
 inline uint8_t inc_dec_int16(int16_t * value, int16_t delta, int16_t min, int16_t max, change_direction_e dir) {
     int16_t v = *value;
     switch (dir) {

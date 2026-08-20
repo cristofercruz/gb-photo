@@ -11,6 +11,7 @@
 #include "state_camera.h"
 #include "load_save.h"
 #include "histogram.h"
+#include "calibration.h"
 
 BANKREF(module_load_save)
 
@@ -40,7 +41,7 @@ const camera_state_options_t default_camera_state_options = {
     .enable_DMA = false,
     .aeb_overexp_count = 4,
     .aeb_overexp_step = 0,
-    .autoexp_area = area_center,
+    .autoexp_area = area_overall,
     .cart_type = cart_type_HDR
 };
 
@@ -93,6 +94,30 @@ void save_camera_state(void) BANKED {
     save_structure.state_options = camera_state;
 }
 
+void save_camera_calibration(void) BANKED {
+    save_wait_sram();
+    CAMERA_SWITCH_RAM(LOAD_SAVE_DATA_BANK);
+    save_structure.calibration = camera_calibration;
+}
+
+/** The calibration block was added after the save format was already in the field, and
+    the magic could not be bumped without wiping everyone's settings. So it is validated
+    structurally instead: a stored block has gain_lo 0..3, gain_hi 4 or 5, a bias voltage
+    of 0..7 per band, and an output reference with both top bits clear. Uninitialised
+    SRAM has no realistic chance of satisfying all twelve constraints at once.
+*/
+static bool calibration_is_valid(void) {
+    uint8_t gain_lo = save_structure.calibration.gains & 0x0F;
+    uint8_t gain_hi = save_structure.calibration.gains >> 4;
+    if (gain_lo > 3) return false;
+    if ((gain_hi != 4) && (gain_hi != 5)) return false;
+    for (uint8_t i = 0; i != N_CALIBRATION_BANDS; i++) {
+        if (save_structure.calibration.voltage_ref[i] > 7) return false;
+        if (save_structure.calibration.voltage_out[i] > 0x3F) return false;
+    }
+    return true;
+}
+
 bool camera_settings_reset = false;
 
 // enable battery backed-up SRAM and load/initialize program settings
@@ -109,6 +134,9 @@ uint8_t INIT_module_load_save(void) BANKED {
     // load camera state
     camera_state = save_structure.state_options;
     memcpy(current_settings, save_structure.mode_settings, sizeof(current_settings));
+    // load the sensor calibration, or mark it absent so the camera state can measure it
+    if (calibration_is_valid()) camera_calibration = save_structure.calibration;
+    else camera_calibration.gains = 0;
     // apply hardware settings
     if (_is_COLOR) {
         if (OPTION(double_speed)) CPU_FAST(); else CPU_SLOW();

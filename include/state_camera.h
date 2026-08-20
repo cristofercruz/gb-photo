@@ -12,8 +12,16 @@
 #include "systemdetect.h"
 #include "systemhelpers.h"
 
-#define TO_EXPOSURE_VALUE(A) ((uint16_t)((A) >> 4))
-#define FROM_EXPOSURE_VALUE(A) (((uint32_t)(A)) << 4)
+/* 65536 exposure counts is exactly one second: a count is 16 M-cycles at 1048576 Hz,
+   i.e. 15625/1024 us. The old macros used a flat 16 us, which made every displayed
+   exposure read 4.9% high. The rational form below is exact in integer arithmetic. */
+#define TO_EXPOSURE_VALUE(A) ((uint16_t)((((uint32_t)(A) * 1024UL) + 7812UL) / 15625UL))
+/* 15625 as shifted adds. The z80 build has no 16x16->32 multiply helper, and this is
+   only ever called to label the display, so the shifts cost nothing that matters. */
+inline uint32_t FROM_EXPOSURE_VALUE(uint16_t count) {
+    uint32_t v = count;   /* 15625 == (1<<13)+(1<<12)+(1<<11)+(1<<10)+(1<<8)+(1<<3)+1 */
+    return ((v << 13) + (v << 12) + (v << 11) + (v << 10) + (v << 8) + (v << 3) + v + 512UL) >> 10;
+}
 
 #define EXPOSURE_LOW_LIMIT TO_EXPOSURE_VALUE(256)
 #define EXPOSURE_HIGH_LIMIT CAM02_MAX_VALUE
@@ -83,6 +91,9 @@ typedef enum {
     area_right,
     area_bottom,
     area_left,
+    /* Appended rather than placed first so that settings saved by earlier builds keep
+       pointing at the area they were set to. The menu lists it first regardless. */
+    area_overall,
     N_AUTOEXP_AREAS
 } autoexp_area_e;
 
@@ -142,7 +153,7 @@ typedef struct camera_shadow_regs_t {
 
 typedef struct camera_mode_settings_t {
     uint16_t current_exposure;
-    int8_t current_exposure_idx;
+    uint8_t current_exposure_idx;
     int8_t current_gain;
     int8_t current_zero_point;
     int8_t current_edge_ratio;
@@ -194,8 +205,11 @@ uint8_t * camera_format_item_text(camera_menu_e id, const uint8_t * format, came
 
 #define COUNTER_INFINITE_VALUE 31
 
-#define DEFAULT_CONTRAST_VALUE 9
-#define DEFAULT_EXPOSURE_INDEX 28
+/* The dither generator indexes contrast record (value - 1), and record 7 spreads the
+   highlight thresholds over 48 counts against record 8's 39 -- which is what keeps a lit
+   wall gradating smoothly instead of stepping. */
+#define DEFAULT_CONTRAST_VALUE 8
+#define DEFAULT_EXPOSURE_INDEX 90     // ~6000us on the 1/20-stop ladder
 
 #define MAX_AEB_IMAGES 29
 #define MAX_AEB_OVEREXPOSURE (MAX_AEB_IMAGES >> 1)

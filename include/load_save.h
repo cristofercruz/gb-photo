@@ -2,6 +2,7 @@
 #define __LOAD_SAVE_H_INCLUDE__
 
 #include "state_camera.h"
+#include "calibration.h"
 
 BANKREF_EXTERN(module_load_save)
 
@@ -15,12 +16,14 @@ typedef struct save_structure_t {
     uint32_t MAGIC;
     camera_state_options_t state_options;
     camera_mode_settings_t mode_settings[N_CAMERA_MODES];
+    camera_calibration_t calibration;
 } save_structure_t;
 CHECK_SIZE_NOT_LARGER(save_structure_t, FREE_SAVE_SPACE);   // compiling breaks here if sizeof(save_structure_t) becomes larger than the available amount of bytes
 
 void save_camera_mode_settings(camera_mode_e mode) BANKED;
 void restore_default_mode_settings(camera_mode_e mode) BANKED;
 void save_camera_state(void) BANKED;
+void save_camera_calibration(void) BANKED;
 
 extern bool camera_settings_reset;
 
