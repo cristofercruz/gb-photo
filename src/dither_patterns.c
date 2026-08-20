@@ -161,6 +161,35 @@ const uint8_t pattern_hatch_c[PATTERN_MATRIX_SIZE] = {
     0x03, 0x07, 0x0B, 0x0F
 };
 
+/** Relief -- the midtones carry no dither at all.
+
+    Since the three levels take separate patterns, the middle one can be set flat: every
+    cell holds the same rank, which turns that transition into a single hard threshold
+    with no texture behind it. The levels either side keep opposing diagonals, so tone
+    reads as smooth plateaus divided by textured edges, the way a raised surface catches
+    light. No single-pattern type can leave a tonal range undithered like this.
+*/
+const uint8_t pattern_flat_mid[PATTERN_MATRIX_SIZE] = {
+    0x08, 0x08, 0x08, 0x08,
+    0x08, 0x08, 0x08, 0x08,
+    0x08, 0x08, 0x08, 0x08,
+    0x08, 0x08, 0x08, 0x08
+};
+
+/** Stipple -- most cells never break tone up.
+
+    Ranks sit mid-range almost everywhere, so those positions act as a plain threshold and
+    contribute no texture; only the few cells holding extreme ranks dither at all. Flat
+    areas stay clean and the dithering appears as isolated points rather than an even
+    screen across the whole image.
+*/
+const uint8_t pattern_stipple[PATTERN_MATRIX_SIZE] = {
+    0x08, 0x08, 0x0C, 0x08,
+    0x08, 0x0F, 0x08, 0x04,
+    0x0C, 0x08, 0x00, 0x08,
+    0x08, 0x04, 0x08, 0x0F
+};
+
 const uint8_t * const * dithering_patterns[N_DITHER_TYPES][NUM_INTERVALS] = {
     [dither_type_Off]        = {pattern_null,       pattern_null,       pattern_null},
     [dither_type_Default]    = {pattern_standard,   pattern_standard,   pattern_standard},
@@ -173,7 +202,9 @@ const uint8_t * const * dithering_patterns[N_DITHER_TYPES][NUM_INTERVALS] = {
     [dither_type_Horizonral] = {pattern_horizontal, pattern_horizontal, pattern_horizontal},
     [dither_type_Mix]        = {pattern_horizontal, pattern_diagonal,   pattern_vertical},
     [dither_type_Halftone]   = {pattern_halftone,   pattern_halftone,   pattern_halftone},
-    [dither_type_Crosshatch] = {pattern_hatch_a,    pattern_hatch_b,    pattern_hatch_c}
+    [dither_type_Crosshatch] = {pattern_hatch_a,    pattern_hatch_b,    pattern_hatch_c},
+    [dither_type_Relief]     = {pattern_hatch_a,    pattern_flat_mid,   pattern_hatch_b},
+    [dither_type_Stipple]    = {pattern_stipple,    pattern_stipple,    pattern_stipple}
 };
 
 void dither_gen_base_values(uint8_t a, uint8_t b, uint8_t * buffer) {

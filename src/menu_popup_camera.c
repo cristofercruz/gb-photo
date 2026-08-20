@@ -456,7 +456,9 @@ const spinedit_value_names_t DitherSpinEditNames[N_DITHER_TYPES] = {
     { .value = dither_type_Horizonral,  .name = " Horiz.\t\t"},
     { .value = dither_type_Mix,         .name = " Mix\t\t"   },
     { .value = dither_type_Halftone,    .name = " Halftone\t"},
-    { .value = dither_type_Crosshatch,  .name = " Cross\t\t" }
+    { .value = dither_type_Crosshatch,  .name = " Cross\t\t"  },
+    { .value = dither_type_Relief,      .name = " Relief\t\t" },
+    { .value = dither_type_Stipple,     .name = " Stipple\t"  }
 };
 const spinedit_params_t DitherSpinEditParams = {
     .caption = "Dithering:",
@@ -478,7 +480,9 @@ const uint8_t * const DitherNames[N_DITHER_TYPES] = {
     [dither_type_Horizonral] = "Horiz.",
     [dither_type_Mix]        = "Mix",
     [dither_type_Halftone]   = "Halftone",
-    [dither_type_Crosshatch] = "Cross"
+    [dither_type_Crosshatch] = "Cross",
+    [dither_type_Relief]     = "Relief",
+    [dither_type_Stipple]    = "Stipple"
 };
 
 
@@ -734,7 +738,9 @@ uint8_t * onCameraPopupMenuItemPaint(const struct menu_t * menu, const struct me
         [dither_type_Horizonral]        = "[Horiz.]",
         [dither_type_Mix]               = "[Mix]",
         [dither_type_Halftone]          = "[Halftone]",
-        [dither_type_Crosshatch]        = "[Cross]"
+        [dither_type_Crosshatch]        = "[Cross]",
+        [dither_type_Relief]            = "[Relief]",
+        [dither_type_Stipple]           = "[Stipple]"
     };
 
     switch ((camera_popup_menu_e)self->id) {
