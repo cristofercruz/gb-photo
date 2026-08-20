@@ -22,6 +22,8 @@ typedef enum {
     dither_type_Mix,
     dither_type_Halftone,
     dither_type_Crosshatch,
+    dither_type_Relief,
+    dither_type_Stipple,
     N_DITHER_TYPES
 } dither_type_e;
 
