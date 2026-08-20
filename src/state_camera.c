@@ -300,7 +300,9 @@ static const table_value_t dither_patterns[N_DITHER_TYPES] = {
     [dither_type_Fuzz]       = { dither_type_Fuzz       , "Fuzz" },
     [dither_type_Vertical]   = { dither_type_Vertical   , "Vert" },
     [dither_type_Horizonral] = { dither_type_Horizonral , "Hori" },
-    [dither_type_Mix]        = { dither_type_Mix        , "Mix"  }
+    [dither_type_Mix]        = { dither_type_Mix        , "Mix"  },
+    [dither_type_Halftone]   = { dither_type_Halftone   , "Half" },
+    [dither_type_Crosshatch] = { dither_type_Crosshatch , "Cros" }
 };
 static const table_value_t zero_points[] = {
     { CAM05_ZERO_DIS, "None" }, { CAM05_ZERO_POS, "Positv" }, { CAM05_ZERO_NEG, "Negtv" }

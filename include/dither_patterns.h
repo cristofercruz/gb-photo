@@ -20,6 +20,8 @@ typedef enum {
     dither_type_Vertical,
     dither_type_Horizonral,
     dither_type_Mix,
+    dither_type_Halftone,
+    dither_type_Crosshatch,
     N_DITHER_TYPES
 } dither_type_e;
 

@@ -122,6 +122,45 @@ const uint8_t pattern_diagonal[PATTERN_MATRIX_SIZE] = {
     0x0B, 0x07, 0x0F, 0x03
 };
 
+/** Halftone -- a clustered-dot screen.
+
+    Every other pattern here disperses its dots to break tone up. This one gathers them:
+    the ranks grow outward from the centre of the cell, so a darkening area fills in as
+    spreading blobs rather than denser speckle, the way a printed halftone does.
+*/
+const uint8_t pattern_halftone[PATTERN_MATRIX_SIZE] = {
+    0x0C, 0x05, 0x06, 0x0D,
+    0x04, 0x00, 0x01, 0x07,
+    0x0B, 0x03, 0x02, 0x08,
+    0x0F, 0x0A, 0x09, 0x0E
+};
+
+/** Crosshatch -- one line direction per threshold level.
+
+    Because the three levels take separate patterns, tone can be built the way engraving
+    builds it: the darkest level lays down one diagonal, the middle level crosses it with
+    the other, and the lightest opens out into uprights. Shadows read as chevrons and
+    highlights as clean strokes, which no single-pattern type can produce.
+*/
+const uint8_t pattern_hatch_a[PATTERN_MATRIX_SIZE] = {
+    0x00, 0x05, 0x0A, 0x0F,
+    0x04, 0x09, 0x0E, 0x03,
+    0x08, 0x0D, 0x02, 0x07,
+    0x0C, 0x01, 0x06, 0x0B
+};
+const uint8_t pattern_hatch_b[PATTERN_MATRIX_SIZE] = {
+    0x00, 0x0D, 0x0A, 0x07,
+    0x04, 0x01, 0x0E, 0x0B,
+    0x08, 0x05, 0x02, 0x0F,
+    0x0C, 0x09, 0x06, 0x03
+};
+const uint8_t pattern_hatch_c[PATTERN_MATRIX_SIZE] = {
+    0x00, 0x04, 0x08, 0x0C,
+    0x01, 0x05, 0x09, 0x0D,
+    0x02, 0x06, 0x0A, 0x0E,
+    0x03, 0x07, 0x0B, 0x0F
+};
+
 const uint8_t * const * dithering_patterns[N_DITHER_TYPES][NUM_INTERVALS] = {
     [dither_type_Off]        = {pattern_null,       pattern_null,       pattern_null},
     [dither_type_Default]    = {pattern_standard,   pattern_standard,   pattern_standard},
@@ -132,7 +171,9 @@ const uint8_t * const * dithering_patterns[N_DITHER_TYPES][NUM_INTERVALS] = {
     [dither_type_Fuzz]       = {pattern_fuzz,       pattern_fuzz,       pattern_fuzz},
     [dither_type_Vertical]   = {pattern_vertical,   pattern_vertical,   pattern_vertical},
     [dither_type_Horizonral] = {pattern_horizontal, pattern_horizontal, pattern_horizontal},
-    [dither_type_Mix]        = {pattern_horizontal, pattern_diagonal,   pattern_vertical}
+    [dither_type_Mix]        = {pattern_horizontal, pattern_diagonal,   pattern_vertical},
+    [dither_type_Halftone]   = {pattern_halftone,   pattern_halftone,   pattern_halftone},
+    [dither_type_Crosshatch] = {pattern_hatch_a,    pattern_hatch_b,    pattern_hatch_c}
 };
 
 void dither_gen_base_values(uint8_t a, uint8_t b, uint8_t * buffer) {
